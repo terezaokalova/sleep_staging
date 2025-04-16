@@ -9,12 +9,10 @@ from scipy.ndimage import median_filter
 from sklearn.metrics import classification_report, confusion_matrix
 
 # -------------------- Setup Paths --------------------
-# Use os.path.expanduser to build all paths relative to home directory.
-HOME_DIR = os.path.expanduser("~")  # Adjust if necessary, e.g., "/Users/okalova"
-# Here, we assume the input EDF files reside in BASE_DIR.
+# All paths are built relative to the home directory.
+HOME_DIR = os.path.expanduser("~")  # adjust if needed, e.g. "/Users/okalova"
 BASE_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "sleep-edf-database-expanded-1.0.0")
-# Instead of writing output, we only compute in memory:
-# DATA_DIR and RESULTS_DIR are not used for saving.
+# In this version, we do not save files; we only process and load data in memory.
 SUBFOLDERS = ['sleep-cassette', 'sleep-telemetry']
 
 USE_MULTIPLE_CHANNELS = True
@@ -23,7 +21,7 @@ CHANNELS_TO_LOAD = ["EEG Fpz-Cz", "EOG horizontal"] if USE_MULTIPLE_CHANNELS els
 TARGET_SFREQ = 100.0
 LOW_FREQ = 0.5
 HIGH_FREQ = 30.0
-EPOCH_LENGTH = 30.0
+EPOCH_LENGTH = 30.0  # seconds per epoch
 SEQ_LENGTH = 20
 SEQ_STRIDE = 10
 
@@ -47,17 +45,18 @@ except ImportError:
 
 def detect_spindles(epoch_data, spindle_band=(11, 16), threshold_factor=2.5):
     """
-    For each epoch (using the first channel, assumed to be EEG):
-    1. Bandpass filter (4th-order Butterworth) between 11-16 Hz.
-    2. Compute the envelope (absolute value).
-    3. Set threshold = threshold_factor * mean(envelope).
-    4. Count peaks that exceed the threshold.
+    Detect spindles in each epoch (using the first channel, assumed to be EEG):
+    1. Apply a 4th–order Butterworth bandpass filter between 11 and 16 Hz.
+    2. Filter the signal using sosfiltfilt.
+    3. Compute the absolute value (the envelope) of the filtered signal.
+    4. Set threshold = threshold_factor * mean(envelope).
+    5. Count the number of peaks that exceed the threshold.
     Returns an array of spindle counts per epoch.
     """
     sos = butter(4, spindle_band, btype='bandpass', fs=TARGET_SFREQ, output='sos')
     spindle_counts = []
     for epoch in epoch_data:  # epoch shape: (n_channels, n_times)
-        eeg = epoch[0]  # use the first channel (EEG)
+        eeg = epoch[0]  # take the first channel (EEG Fpz-Cz)
         filtered = sosfiltfilt(sos, eeg)
         envelope = np.abs(filtered)
         threshold = threshold_factor * np.mean(envelope)
@@ -80,7 +79,7 @@ def process_record(psg_path, hyp_path, channels, target_sfreq, low_freq, high_fr
                         baseline=None, preload=True, verbose=False)
     data = epochs.get_data()  # shape: (n_epochs, n_channels, n_times)
     labels = epochs.events[:, -1]
-    # Normalize per channel.
+    # Normalize each channel per epoch
     if use_gpu:
         data_tensor = torch.tensor(data, dtype=torch.float32, device=device)
         for ch in range(data_tensor.size(1)):
@@ -143,19 +142,20 @@ def main_processing():
     print("EDF processing complete. Results printed to terminal.")
 
 # -------------------- PyTorch Dataset Classes --------------------
+# These classes assume that NPZ files would have been saved.
+# In our "no save" mode, you can generate synthetic datasets or
+# integrate this with the processing pipeline if desired.
 
 class SleepDataset(Dataset):
     def __init__(self, npz_dir):
-        # Instead of loading from NPZ, here we simulate loading the data.
-        # For demonstration, we assume npz files are in a list (in practice, one would load them)
-        self.npz_files = sorted(glob.glob(os.path.join(npz_dir, "*_epochs.npz")))
+        npz_files = sorted(glob.glob(os.path.join(npz_dir, "*_epochs.npz")))
         data_list = []
         label_list = []
-        for file in self.npz_files:
+        for file in npz_files:
             loaded = np.load(file)
             data_list.append(loaded['data'])
             label_list.append(loaded['labels'])
-        self.data = np.concatenate(data_list, axis=0)  # shape: (total_epochs, n_channels, n_times)
+        self.data = np.concatenate(data_list, axis=0)
         self.labels = np.concatenate(label_list, axis=0)
     def __len__(self):
         return self.data.shape[0]
@@ -166,9 +166,9 @@ class SleepDataset(Dataset):
 
 class SelfSupervisedSleepDataset(Dataset):
     def __init__(self, npz_dir):
-        self.npz_files = sorted(glob.glob(os.path.join(npz_dir, "*_epochs.npz")))
+        npz_files = sorted(glob.glob(os.path.join(npz_dir, "*_epochs.npz")))
         data_list = []
-        for file in self.npz_files:
+        for file in npz_files:
             loaded = np.load(file)
             data_list.append(loaded['data'])
         self.data = np.concatenate(data_list, axis=0)
@@ -183,6 +183,7 @@ class SelfSupervisedSleepDataset(Dataset):
         return torch.tensor(aug1, dtype=torch.float32), torch.tensor(aug2, dtype=torch.float32)
 
 def augment_epoch(epoch, noise_std=0.05):
+    # Simple augmentation: add Gaussian noise.
     noise = np.random.randn(*epoch.shape) * noise_std
     return epoch + noise
 
@@ -303,7 +304,7 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.cat([labels, labels], dim=0)
     return F.cross_entropy(sim_matrix, labels)
 
-# -------------------- Post-processing Functions --------------------
+# -------------------- Post-processing --------------------
 
 def median_smoothing(predictions, kernel_size=3):
     return median_filter(predictions, size=kernel_size)
@@ -359,7 +360,7 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
 def train_self_supervised(epochs=5, batch_size=64):
     dataset = SelfSupervisedSleepDataset(DATA_DIR)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    model = SelfSupervisedModel(in_channels=1)  # single-channel
+    model = SelfSupervisedModel(in_channels=1)  # single-channel (EEG Fpz-Cz alone)
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     losses = []
@@ -378,7 +379,6 @@ def train_self_supervised(epochs=5, batch_size=64):
         avg_loss = epoch_loss / len(dataset)
         losses.append(avg_loss)
         print(f"Self-Supervised Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}")
-    # Do not save model; just print final loss plot.
     plt.figure()
     plt.plot(range(1, epochs+1), losses, marker='o')
     plt.xlabel("Epoch")
@@ -419,6 +419,7 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
             logits, domain_logits = model(inputs, lambda_=0.1)
             loss = focal_loss(logits, targets)
             if domain_logits is not None:
+                # For demonstration, use dummy domain labels (all zeros).
                 dummy_domain = torch.zeros(targets.size(0), dtype=torch.long, device=device)
                 domain_loss = F.cross_entropy(domain_logits, dummy_domain)
                 loss = loss + 0.1 * domain_loss
@@ -479,6 +480,11 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
     plt.legend()
     plt.grid(True)
     plt.show()
+    
+    # Optionally call evaluate_model() for temporal dynamics post-processing.
+    # Here you could supply a transition probability matrix (estimated from training data).
+    # For now, we call median smoothing by default.
+    evaluate_model(model, val_loader, use_median_smoothing=True)
     
     print("Supervised training complete.")
 
