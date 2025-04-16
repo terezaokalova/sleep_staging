@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import median_filter
 from sklearn.metrics import classification_report, confusion_matrix
 
-# Path to the preprocessed data
-PROCESSED_DATA_DIR = '/content/drive/MyDrive/spring_2025/STAT_4830/4830_project/sleepedf_data/processed_sleepedf'
+# PROCESSED_DATA_DIR = '/content/drive/MyDrive/spring_2025/STAT_4830/4830_project/sleepedf_data/processed_sleepedf'
+PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
 
 # Model parameters
 BATCH_SIZE = 32
