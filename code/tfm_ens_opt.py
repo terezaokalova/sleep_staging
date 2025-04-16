@@ -358,7 +358,7 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
 # -------------------- Training Functions --------------------
 
 def train_self_supervised(epochs=5, batch_size=64):
-    dataset = SelfSupervisedSleepDataset(DATA_DIR)
+    dataset = SelfSupervisedSleepDataset(BASE_DIR)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     model = SelfSupervisedModel(in_channels=1)  # single-channel (EEG Fpz-Cz alone)
     model.to(device)
@@ -389,7 +389,7 @@ def train_self_supervised(epochs=5, batch_size=64):
     print("Self-supervised pretraining complete.")
 
 def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
-    dataset = SleepDataset(DATA_DIR)
+    dataset = SleepDataset(BASE_DIR)
     total_samples = len(dataset)
     train_size = int(0.8 * total_samples)
     val_size = total_samples - train_size
