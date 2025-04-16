@@ -11,13 +11,14 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix
 from scipy.signal import butter, filtfilt, find_peaks, sosfiltfilt
 from scipy.ndimage import median_filter
 
 # -------------------- Setup Paths --------------------
-# Use the user's home directory to avoid permission issues.
+# Set HOME_DIR explicitly if os.path.expanduser("~") does not return your home path.
 HOME_DIR = os.path.expanduser("~")
+# Uncomment and edit the following line if needed:
+# HOME_DIR = '/Users/okalova'
 BASE_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "sleep-edf-database-expanded-1.0.0")
 DATA_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "processed_sleepedf")
 RESULTS_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "results", "sleepedf_res")
@@ -41,25 +42,31 @@ ANNOTATION_MAP = {
     "Sleep stage 1": 1,
     "Sleep stage 2": 2,
     "Sleep stage 3": 3,
-    "Sleep stage 4": 3,  # collapse stage 3 and 4 into N3
+    "Sleep stage 4": 3,  # collapse stages 3 and 4 into N3
     "Sleep stage R": 4
 }
+
+# Check if GPU is available
+try:
+    use_gpu = torch.cuda.is_available()
+    device = torch.device("cuda" if use_gpu else "cpu")
+except ImportError:
+    use_gpu = False
 
 # -------------------- Data Processing Functions --------------------
 
 def detect_spindles(epoch_data, spindle_band=(11, 16), threshold_factor=2.5):
     """
-    For each epoch, detect spindles by:
-      1. Applying a 4th-order Butterworth bandpass filter (11-16 Hz).
-      2. Computing the envelope (absolute value).
-      3. Setting a threshold = threshold_factor * mean(envelope).
-      4. Counting peaks above the threshold.
+    For each epoch (using the first channel, assumed to be EEG), detect spindles:
+      1. Apply a 4th-order Butterworth bandpass filter in 11–16 Hz.
+      2. Compute the envelope (absolute value).
+      3. Set threshold = threshold_factor * mean(envelope).
+      4. Count peaks above threshold.
     Returns an array of spindle counts per epoch.
     """
-    from scipy.signal import sosfiltfilt
     sos = butter(4, spindle_band, btype='bandpass', fs=TARGET_SFREQ, output='sos')
     spindle_counts = []
-    for epoch in epoch_data:  # epoch shape: (n_channels, n_times); use first channel (EEG)
+    for epoch in epoch_data:  # epoch shape: (n_channels, n_times)
         eeg = epoch[0]
         filtered = sosfiltfilt(sos, eeg)
         envelope = np.abs(filtered)
@@ -83,7 +90,7 @@ def process_record(psg_path, hyp_path, channels, target_sfreq, low_freq, high_fr
                         baseline=None, preload=True, verbose=False)
     data = epochs.get_data()  # shape: (n_epochs, n_channels, n_times)
     labels = epochs.events[:, -1]
-    # Normalize each channel
+    # Normalize data per channel
     if use_gpu:
         data_tensor = torch.tensor(data, dtype=torch.float32, device=device)
         for ch in range(data_tensor.size(1)):
@@ -188,7 +195,6 @@ class SelfSupervisedSleepDataset(Dataset):
         return torch.tensor(aug1, dtype=torch.float32), torch.tensor(aug2, dtype=torch.float32)
 
 def augment_epoch(epoch, noise_std=0.05):
-    """Add random Gaussian noise to the epoch as augmentation."""
     noise = np.random.randn(*epoch.shape) * noise_std
     return epoch + noise
 
@@ -217,7 +223,6 @@ class ResidualBlock(nn.Module):
         out += identity
         return self.relu(out)
 
-# Encoder for both self-supervised and supervised models
 class Encoder(nn.Module):
     def __init__(self, in_channels, embedding_dim=128):
         super().__init__()
@@ -235,7 +240,6 @@ class Encoder(nn.Module):
         embedding = self.fc(x)
         return embedding
 
-# Projection Head for self-supervised learning
 class ProjectionHead(nn.Module):
     def __init__(self, embedding_dim=128, projection_dim=64):
         super().__init__()
@@ -247,7 +251,6 @@ class ProjectionHead(nn.Module):
         x = self.relu(x)
         return self.fc2(x)
 
-# Self-Supervised Model
 class SelfSupervisedModel(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -258,7 +261,6 @@ class SelfSupervisedModel(nn.Module):
         projection = self.projection_head(embedding)
         return projection
 
-# Gradient Reversal Layer for domain adaptation
 class GradientReversalFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, lambda_):
@@ -271,7 +273,6 @@ class GradientReversalFunction(torch.autograd.Function):
 def grad_reverse(x, lambda_=1.0):
     return GradientReversalFunction.apply(x, lambda_)
 
-# Domain Classifier branch
 class DomainClassifier(nn.Module):
     def __init__(self, embedding_dim=128, num_domains=10):
         super().__init__()
@@ -279,7 +280,6 @@ class DomainClassifier(nn.Module):
     def forward(self, x):
         return self.fc(x)
 
-# Supervised Model with optional Domain Adaptation
 class SupervisedModel(nn.Module):
     def __init__(self, in_channels, num_classes=5, num_domains=10, use_domain_adaptation=True):
         super().__init__()
@@ -317,7 +317,7 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.cat([labels, labels], dim=0)
     return F.cross_entropy(sim_matrix, labels)
 
-# -------------------- Evaluation Functions --------------------
+# -------------------- Post-processing Functions --------------------
 
 def median_smoothing(predictions, kernel_size=3):
     return median_filter(predictions, size=kernel_size)
@@ -325,7 +325,7 @@ def median_smoothing(predictions, kernel_size=3):
 def viterbi_decode(log_probs, transition_matrix):
     T, num_classes = log_probs.shape
     viterbi = np.zeros((T, num_classes))
-    backpointer = np.zeros((T, num_classes), dtype=np.int)
+    backpointer = np.zeros((T, num_classes), dtype=int)
     viterbi[0] = log_probs[0]
     for t in range(1, T):
         for j in range(num_classes):
@@ -359,7 +359,7 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
     print("Final Evaluation Report:")
     print(classification_report(all_targets, all_preds))
     cm = confusion_matrix(all_targets, all_preds)
-    plt.figure(figsize=(6, 5))
+    plt.figure(figsize=(6,5))
     plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
     plt.title("Confusion Matrix")
     plt.xlabel("Predicted")
@@ -373,7 +373,7 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
 def train_self_supervised(epochs=5, batch_size=64):
     dataset = SelfSupervisedSleepDataset(DATA_DIR)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    model = SelfSupervisedModel(in_channels=1)  # using single channel input
+    model = SelfSupervisedModel(in_channels=1)  # single-channel input
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     losses = []
@@ -396,7 +396,7 @@ def train_self_supervised(epochs=5, batch_size=64):
     plt.figure()
     plt.plot(range(1, epochs+1), losses, marker='o')
     plt.xlabel("Epoch")
-    plt.ylabel("Pretraining Loss")
+    plt.ylabel("Loss")
     plt.title("Self-Supervised Pretraining Loss")
     plt.grid(True)
     plt.show()
@@ -422,7 +422,6 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
     
     train_losses = []
     val_losses = []
-    
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
@@ -501,9 +500,9 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
 # -------------------- Main Entry Point --------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Sleep-EDF Preprocessing and Training Pipeline")
+    parser = argparse.ArgumentParser(description="Sleep-EDF Processing and Training Pipeline")
     parser.add_argument("--mode", type=str, choices=["process", "pretrain", "train"], required=True,
-                        help="Mode: 'process' for EDF-to-NPZ conversion, 'pretrain' for self-supervised pretraining, 'train' for supervised training with domain adaptation")
+                        help="Mode to run: 'process' for EDF-to-NPZ conversion, 'pretrain' for self-supervised pretraining, 'train' for supervised training with domain adaptation")
     args = parser.parse_args()
     if args.mode == "process":
         main_processing()
