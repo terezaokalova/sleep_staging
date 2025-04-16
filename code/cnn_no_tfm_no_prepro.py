@@ -160,7 +160,6 @@ def create_balanced_sampler(dataset):
     
     return sampler, torch.FloatTensor([class_weights[c] for c in sorted(class_weights.keys())])
 
-# -------------------- Model Definitions --------------------
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
