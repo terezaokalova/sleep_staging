@@ -9,6 +9,16 @@ from sklearn.metrics import classification_report, confusion_matrix
 # PROCESSED_DATA_DIR = '/content/drive/MyDrive/spring_2025/STAT_4830/4830_project/sleepedf_data/processed_sleepedf'
 PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
 
+# new - not included in the most recent run
+import random
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 # Model parameters
 BATCH_SIZE = 32
 # NUM_EPOCHS = 10
