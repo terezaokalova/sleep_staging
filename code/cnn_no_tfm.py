@@ -8,13 +8,11 @@ from scipy.signal import butter, sosfiltfilt, find_peaks
 from scipy.ndimage import median_filter
 from sklearn.metrics import classification_report, confusion_matrix
 
-# -------------------- Setup Paths --------------------
-# Set HOME_DIR either from os.path.expanduser() or a specific absolute path.
-# Here we set BASE_DIR to the absolute location of your EDF data:
-BASE_DIR = os.path.join("/mnt/sauce/littlab/users/okalova/sleep/sleep_staging/data/sleep-edf-database-expanded-1.0.0")
+# BASE_DIR = os.path.join("/mnt/sauce/littlab/users/okalova/sleep/sleep_staging/data/sleep-edf-database-expanded-1.0.0")
+BASE_DIR = "/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0"
 SUBFOLDERS = ['sleep-cassette', 'sleep-telemetry']
 
-# We process data fully in memory (no saving to disk).
+# process data fully in memory (no saving to disk).
 # Use multiple channels flag; if False, only use Fpz‑Cz.
 USE_MULTIPLE_CHANNELS = True
 CHANNELS_TO_LOAD = ["EEG Fpz-Cz", "EOG horizontal"] if USE_MULTIPLE_CHANNELS else ["EEG Fpz-Cz"]
@@ -35,7 +33,6 @@ ANNOTATION_MAP = {
     "Sleep stage R": 4
 }
 
-# -------------------- Check Data Directory --------------------
 def check_data_path():
     if not os.path.exists(BASE_DIR):
         print(f"ERROR: Data directory not found: {BASE_DIR}")
@@ -56,7 +53,6 @@ def check_data_path():
         return False
     return True
 
-# -------------------- GPU Availability --------------------
 try:
     use_gpu = torch.cuda.is_available()
     if use_gpu:
@@ -70,7 +66,6 @@ except Exception as e:
     device = torch.device("cpu")
     print(f"Error checking GPU: {e}. Using CPU.")
 
-# -------------------- Data Processing Functions --------------------
 def process_record(psg_path, hyp_path, channels, target_sfreq, low_freq, high_freq, epoch_length):
     print(f"Loading {os.path.basename(psg_path)}...")
     raw = mne.io.read_raw_edf(psg_path, include=channels, preload=True, verbose=False)
@@ -152,7 +147,6 @@ def main_processing():
     Parallel(n_jobs=2)(delayed(process_and_print)(f, CHANNELS_TO_LOAD) for f in psg_files)
     print("EDF processing complete. Results printed to terminal.")
 
-# -------------------- Dataset Classes --------------------
 class RawSleepDataset(Dataset):
     """
     Loads raw EDF data from BASE_DIR by processing all PSG files and concatenating epochs.
@@ -297,7 +291,6 @@ class SupervisedModel(nn.Module):
         logits = self.classifier(embedding)
         return logits
 
-# -------------------- Loss Functions --------------------
 def focal_loss(inputs, targets, alpha=0.25, gamma=2):
     ce_loss = F.cross_entropy(inputs, targets, reduction='none')
     pt = torch.exp(-ce_loss)
@@ -316,7 +309,6 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     labels = torch.cat([labels, labels], dim=0)
     return F.cross_entropy(sim_matrix, labels)
 
-# -------------------- Post-processing --------------------
 def median_smoothing(predictions, kernel_size=3):
     return median_filter(predictions, size=kernel_size)
 
@@ -366,7 +358,6 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
     plt.tight_layout()
     plt.show()
 
-# -------------------- Training Functions --------------------
 def train_self_supervised(epochs=5, batch_size=64):
     if not check_data_path():
         sys.exit(1)
@@ -499,7 +490,6 @@ def train_supervised(epochs=10, batch_size=32):
     
     print("Supervised training complete.")
 
-# -------------------- Main Entry Point --------------------
 def main():
     parser = argparse.ArgumentParser(description="Sleep-EDF Processing and Training Pipeline (No Disk-Save Mode)")
     parser.add_argument("--mode", type=str, choices=["process", "pretrain", "train"], required=True,
