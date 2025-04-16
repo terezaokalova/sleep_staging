@@ -11,7 +11,8 @@ PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processe
 
 # Model parameters
 BATCH_SIZE = 32
-NUM_EPOCHS = 10
+# NUM_EPOCHS = 10
+NUM_EPOCHS = 50
 LEARNING_RATE = 1e-4
 TRAIN_RATIO = 0.8
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
