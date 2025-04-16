@@ -22,7 +22,7 @@ torch.backends.cudnn.benchmark = False
 # Model parameters
 BATCH_SIZE = 32
 # NUM_EPOCHS = 10
-NUM_EPOCHS = 50
+NUM_EPOCHS = 35
 LEARNING_RATE = 1e-4
 TRAIN_RATIO = 0.8
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -271,14 +271,70 @@ class SleepTransformer(nn.Module):
         
         return x
 
-def focal_loss(inputs, targets, alpha=0.25, gamma=2):
+def focal_loss_with_n1_focus(inputs, targets, alpha_general=0.25, alpha_n1=0.75, gamma=2):
     """
-    Focal Loss for handling class imbalance
+    Focal Loss with specific focus on N1 class (class index 1)
+    - alpha_general: weight for all non-N1 classes
+    - alpha_n1: higher weight specifically for N1 class
+    - gamma: focusing parameter - same as standard focal loss
     """
+    # Get class dimension
+    num_classes = inputs.size(-1)
+    
+    # Create one-hot encoded targets
+    one_hot_targets = F.one_hot(targets, num_classes=num_classes)
+    
+    # Calculate standard cross entropy (per element)
     ce_loss = F.cross_entropy(inputs, targets, reduction='none')
     pt = torch.exp(-ce_loss)
-    loss = alpha * ((1 - pt) ** gamma) * ce_loss
+    
+    # Create a mask for N1 instances (where target == 1)
+    n1_mask = (targets == 1).float()
+    
+    # Apply different alpha values for N1 vs other classes
+    alphas = alpha_general * (1 - n1_mask) + alpha_n1 * n1_mask
+    
+    # Calculate the full focal loss with the appropriate alpha per sample
+    loss = alphas * ((1 - pt) ** gamma) * ce_loss
+    
     return loss.mean()
+
+def focal_loss_with_n1_focus(inputs, targets, alpha_general=0.25, alpha_n1=0.75, gamma=2):
+    """
+    Focal Loss with specific focus on N1 class (class index 1)
+    - alpha_general: weight for all non-N1 classes
+    - alpha_n1: higher weight specifically for N1 class
+    - gamma: focusing parameter - same as standard focal loss
+    """
+    # Get class dimension
+    num_classes = inputs.size(-1)
+    
+    # Create one-hot encoded targets
+    one_hot_targets = F.one_hot(targets, num_classes=num_classes)
+    
+    # Calculate standard cross entropy (per element)
+    ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+    pt = torch.exp(-ce_loss)
+    
+    # Create a mask for N1 instances (where target == 1)
+    n1_mask = (targets == 1).float()
+    
+    # Apply different alpha values for N1 vs other classes
+    alphas = alpha_general * (1 - n1_mask) + alpha_n1 * n1_mask
+    
+    # Calculate the full focal loss with the appropriate alpha per sample
+    loss = alphas * ((1 - pt) ** gamma) * ce_loss
+    
+    return loss.mean()
+
+# def focal_loss(inputs, targets, alpha=0.25, gamma=2):
+#     """
+#     Focal Loss for handling class imbalance
+#     """
+#     ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+#     pt = torch.exp(-ce_loss)
+#     loss = alpha * ((1 - pt) ** gamma) * ce_loss
+#     return loss.mean()
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
     """Train model for one epoch"""
@@ -433,7 +489,8 @@ def main():
     
     # Use focal loss with class weights
     class_weights = class_weights.to(device)
-    criterion = lambda x, y: focal_loss(x, y, alpha=0.25, gamma=2)
+    # criterion = lambda x, y: focal_loss(x, y, alpha=0.25, gamma=2)
+    criterion = lambda x, y: focal_loss_with_n1_focus(x, y, alpha_general=0.25, alpha_n1=0.75, gamma=2)
     
     # Optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
