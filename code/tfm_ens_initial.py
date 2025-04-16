@@ -5,20 +5,22 @@ import numpy as np
 import mne
 from joblib import Parallel, delayed
 
-# server path
+# Attempt to import torch for GPU-accelerated normalization
+try:
+    import torch
+    use_gpu = torch.cuda.is_available()
+    device = torch.device("cuda" if use_gpu else "cpu")
+except ImportError:
+    use_gpu = False
+
+# Server paths
 BASE_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
 DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
-# terez localova
-# BASE_DIR = '/Users/tereza/spring_2025/STAT_4830/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
-# DATA_DIR = '/Users/tereza/spring_2025/STAT_4830/STAT-4830-GOALZ-project/data/processed_sleepedf'
 SUBFOLDERS = ['sleep-cassette', 'sleep-telemetry']
 os.makedirs(DATA_DIR, exist_ok=True)
 
 USE_MULTIPLE_CHANNELS = True
-if USE_MULTIPLE_CHANNELS:
-    CHANNELS_TO_LOAD = ["EEG Fpz-Cz", "EOG horizontal"]
-else:
-    CHANNELS_TO_LOAD = ["EEG Fpz-Cz"]
+CHANNELS_TO_LOAD = ["EEG Fpz-Cz", "EOG horizontal"] if USE_MULTIPLE_CHANNELS else ["EEG Fpz-Cz"]
 
 TARGET_SFREQ = 100.0
 LOW_FREQ = 0.5
@@ -51,32 +53,39 @@ def process_record(psg_path, hyp_path, channels, target_sfreq, low_freq, high_fr
                         baseline=None, preload=True, verbose=False)
     data = epochs.get_data()
     labels = epochs.events[:, -1]
-    for ch in range(data.shape[1]):
-        m = np.mean(data[:, ch, :])
-        s = np.std(data[:, ch, :]) if np.std(data[:, ch, :]) != 0 else 1.0
-        data[:, ch, :] = (data[:, ch, :] - m) / s
+    # Normalize each channel; if GPU is available, perform on GPU
+    if use_gpu:
+        data_tensor = torch.tensor(data, dtype=torch.float32, device=device)
+        for ch in range(data_tensor.size(1)):
+            m_val = torch.mean(data_tensor[:, ch, :])
+            s_val = torch.std(data_tensor[:, ch, :])
+            if s_val.item() == 0:
+                s_val = torch.tensor(1.0, device=device)
+            data_tensor[:, ch, :] = (data_tensor[:, ch, :] - m_val) / s_val
+        data = data_tensor.cpu().numpy()
+    else:
+        for ch in range(data.shape[1]):
+            m_val = np.mean(data[:, ch, :])
+            s_val = np.std(data[:, ch, :]) if np.std(data[:, ch, :]) != 0 else 1.0
+            data[:, ch, :] = (data[:, ch, :] - m_val) / s_val
     return data, labels, raw.ch_names
 
 def create_sequences(data, labels, seq_length, seq_stride):
-    n_epochs = data.shape[0]
     sequences = []
     seq_labels = []
+    n_epochs = data.shape[0]
     for start in range(0, n_epochs - seq_length + 1, seq_stride):
-        sequences.append(data[start:start+seq_length])
-        seq_labels.append(labels[start:start+seq_length])
+        sequences.append(data[start:start + seq_length])
+        seq_labels.append(labels[start:start + seq_length])
     return np.array(sequences), np.array(seq_labels)
 
 def find_hypnogram(psg_file):
     subject_id = os.path.basename(psg_file)[:6]
-    dir_path = os.path.dirname(psg_file)
-    pattern = os.path.join(dir_path, f"{subject_id}*Hypnogram.edf")
+    pattern = os.path.join(os.path.dirname(psg_file), f"{subject_id}*Hypnogram.edf")
     hyp_files = glob.glob(pattern)
-    if len(hyp_files) == 1:
+    if len(hyp_files) >= 1:
         return hyp_files[0]
-    elif len(hyp_files) > 1:
-        return hyp_files[0]
-    else:
-        return None
+    return None
 
 def process_and_save(psg_file, output_dir, channels):
     hyp_file = find_hypnogram(psg_file)
@@ -101,7 +110,7 @@ def main():
     psg_files = []
     for sub in SUBFOLDERS:
         psg_files.extend(glob.glob(os.path.join(BASE_DIR, sub, '*-PSG.edf')))
-    print(f"Found {len(psg_files)} PSG files.")
+    print(f"Found {len(psg_files)} PSG files. GPU Enabled: {use_gpu}")
     Parallel(n_jobs=2)(delayed(process_and_save)(f, DATA_DIR, CHANNELS_TO_LOAD) for f in psg_files)
 
 if __name__ == '__main__':
