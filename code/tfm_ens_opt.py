@@ -15,20 +15,15 @@ from sklearn.metrics import classification_report, confusion_matrix
 from scipy.signal import butter, filtfilt, find_peaks, sosfiltfilt
 from scipy.ndimage import median_filter
 
-# Check for GPU availability
-try:
-    use_gpu = torch.cuda.is_available()
-    device = torch.device("cuda" if use_gpu else "cpu")
-except ImportError:
-    use_gpu = False
-    device = torch.device("cpu")
-
-# Paths and settings (modify these paths as required)
-BASE_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
-DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
-RESULTS_DIR = '/Users/tereza/spring_4830/STAT-4830-GOALZ-project/results/sleepedf_res'
+# -------------------- Setup Paths --------------------
+# Use the user's home directory to avoid permission issues.
+HOME_DIR = os.path.expanduser("~")
+BASE_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "sleep-edf-database-expanded-1.0.0")
+DATA_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "processed_sleepedf")
+RESULTS_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "results", "sleepedf_res")
 for d in [DATA_DIR, RESULTS_DIR]:
     os.makedirs(d, exist_ok=True)
+
 SUBFOLDERS = ['sleep-cassette', 'sleep-telemetry']
 
 USE_MULTIPLE_CHANNELS = True
@@ -50,22 +45,21 @@ ANNOTATION_MAP = {
     "Sleep stage R": 4
 }
 
-# =================== Data Processing Functions ===================
+# -------------------- Data Processing Functions --------------------
 
 def detect_spindles(epoch_data, spindle_band=(11, 16), threshold_factor=2.5):
     """
-    Detect spindles in each epoch using the following steps:
-      1. Bandpass filter the epoch in the spindle frequency range (11–16 Hz).
-      2. Compute the envelope (absolute value) of the filtered signal.
-      3. Set a threshold at threshold_factor times the mean envelope.
-      4. Count peaks above the threshold as spindles.
-    Returns a (n_epochs, 1) array of spindle counts.
+    For each epoch, detect spindles by:
+      1. Applying a 4th-order Butterworth bandpass filter (11-16 Hz).
+      2. Computing the envelope (absolute value).
+      3. Setting a threshold = threshold_factor * mean(envelope).
+      4. Counting peaks above the threshold.
+    Returns an array of spindle counts per epoch.
     """
     from scipy.signal import sosfiltfilt
     sos = butter(4, spindle_band, btype='bandpass', fs=TARGET_SFREQ, output='sos')
     spindle_counts = []
-    for epoch in epoch_data:  # epoch shape: (n_channels, n_times)
-        # Assume first channel is EEG Fpz-Cz
+    for epoch in epoch_data:  # epoch shape: (n_channels, n_times); use first channel (EEG)
         eeg = epoch[0]
         filtered = sosfiltfilt(sos, eeg)
         envelope = np.abs(filtered)
@@ -84,12 +78,12 @@ def process_record(psg_path, hyp_path, channels, target_sfreq, low_freq, high_fr
     raw.set_annotations(ann, emit_warning=False)
     events, _ = mne.events_from_annotations(raw, event_id=ANNOTATION_MAP, chunk_duration=epoch_length)
     tmin = 0.0
-    tmax = epoch_length - 1/raw.info['sfreq']
+    tmax = epoch_length - 1 / raw.info['sfreq']
     epochs = mne.Epochs(raw, events=events, event_id=ANNOTATION_MAP, tmin=tmin, tmax=tmax,
                         baseline=None, preload=True, verbose=False)
     data = epochs.get_data()  # shape: (n_epochs, n_channels, n_times)
     labels = epochs.events[:, -1]
-    # Normalize each channel in each epoch
+    # Normalize each channel
     if use_gpu:
         data_tensor = torch.tensor(data, dtype=torch.float32, device=device)
         for ch in range(data_tensor.size(1)):
@@ -155,7 +149,7 @@ def main_processing():
     Parallel(n_jobs=2)(delayed(process_and_save)(f, DATA_DIR, CHANNELS_TO_LOAD) for f in psg_files)
     print("EDF to NPZ conversion complete.")
 
-# =================== PyTorch Dataset Classes ===================
+# -------------------- PyTorch Dataset Classes --------------------
 
 class SleepDataset(Dataset):
     def __init__(self, npz_dir):
@@ -166,12 +160,12 @@ class SleepDataset(Dataset):
             loaded = np.load(file)
             data_list.append(loaded['data'])
             label_list.append(loaded['labels'])
-        self.data = np.concatenate(data_list, axis=0)  # shape: (total_epochs, n_channels, n_times)
+        self.data = np.concatenate(data_list, axis=0)  # (total_epochs, n_channels, n_times)
         self.labels = np.concatenate(label_list, axis=0)
     def __len__(self):
         return self.data.shape[0]
     def __getitem__(self, idx):
-        x = torch.tensor(self.data[idx], dtype=torch.float32).unsqueeze(1)  # final shape: (n_channels, 1, n_times)
+        x = torch.tensor(self.data[idx], dtype=torch.float32).unsqueeze(1)  # shape: (n_channels, 1, n_times)
         y = torch.tensor(self.labels[idx], dtype=torch.long)
         return x, y
 
@@ -187,7 +181,6 @@ class SelfSupervisedSleepDataset(Dataset):
         return self.data.shape[0]
     def __getitem__(self, idx):
         epoch = self.data[idx]
-        # Add a singleton channel dimension if needed so that shape becomes (n_channels, 1, n_times)
         if len(epoch.shape) == 2:
             epoch = np.expand_dims(epoch, axis=0)
         aug1 = augment_epoch(epoch)
@@ -195,13 +188,12 @@ class SelfSupervisedSleepDataset(Dataset):
         return torch.tensor(aug1, dtype=torch.float32), torch.tensor(aug2, dtype=torch.float32)
 
 def augment_epoch(epoch, noise_std=0.05):
-    """Simple augmentation: add random Gaussian noise."""
+    """Add random Gaussian noise to the epoch as augmentation."""
     noise = np.random.randn(*epoch.shape) * noise_std
     return epoch + noise
 
-# =================== Model Definitions ===================
+# -------------------- Model Definitions --------------------
 
-# ResidualBlock from previous code
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
@@ -225,7 +217,7 @@ class ResidualBlock(nn.Module):
         out += identity
         return self.relu(out)
 
-# Encoder (CNN) for both self-supervised and supervised models
+# Encoder for both self-supervised and supervised models
 class Encoder(nn.Module):
     def __init__(self, in_channels, embedding_dim=128):
         super().__init__()
@@ -236,16 +228,14 @@ class Encoder(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(16, embedding_dim)
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
+        x = self.relu(self.bn1(self.conv1(x)))
         x = self.resblock(x)
         x = self.pool(x)
         x = torch.flatten(x, 1)
         embedding = self.fc(x)
         return embedding
 
-# Projection Head for Self-Supervised Learning
+# Projection Head for self-supervised learning
 class ProjectionHead(nn.Module):
     def __init__(self, embedding_dim=128, projection_dim=64):
         super().__init__()
@@ -255,10 +245,9 @@ class ProjectionHead(nn.Module):
     def forward(self, x):
         x = self.fc1(x)
         x = self.relu(x)
-        x = self.fc2(x)
-        return x
+        return self.fc2(x)
 
-# Self-Supervised Model (Encoder + Projection Head)
+# Self-Supervised Model
 class SelfSupervisedModel(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -269,7 +258,7 @@ class SelfSupervisedModel(nn.Module):
         projection = self.projection_head(embedding)
         return projection
 
-# Domain Adaptation: Gradient Reversal Layer and Domain Classifier
+# Gradient Reversal Layer for domain adaptation
 class GradientReversalFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, lambda_):
@@ -282,6 +271,7 @@ class GradientReversalFunction(torch.autograd.Function):
 def grad_reverse(x, lambda_=1.0):
     return GradientReversalFunction.apply(x, lambda_)
 
+# Domain Classifier branch
 class DomainClassifier(nn.Module):
     def __init__(self, embedding_dim=128, num_domains=10):
         super().__init__()
@@ -289,7 +279,7 @@ class DomainClassifier(nn.Module):
     def forward(self, x):
         return self.fc(x)
 
-# Supervised Model with Domain Adaptation
+# Supervised Model with optional Domain Adaptation
 class SupervisedModel(nn.Module):
     def __init__(self, in_channels, num_classes=5, num_domains=10, use_domain_adaptation=True):
         super().__init__()
@@ -307,7 +297,8 @@ class SupervisedModel(nn.Module):
             return logits, domain_logits
         return logits, None
 
-# =================== Loss Functions ===================
+# -------------------- Loss Functions --------------------
+
 def focal_loss(inputs, targets, alpha=0.25, gamma=2):
     ce_loss = F.cross_entropy(inputs, targets, reduction='none')
     pt = torch.exp(-ce_loss)
@@ -320,14 +311,14 @@ def nt_xent_loss(z1, z2, temperature=0.5):
     batch_size = z1.size(0)
     z = torch.cat([z1_norm, z2_norm], dim=0)
     sim_matrix = torch.mm(z, z.t()) / temperature
-    mask = torch.eye(2*batch_size, device=z.device).bool()
+    mask = torch.eye(2 * batch_size, device=z.device).bool()
     sim_matrix = sim_matrix.masked_fill(mask, -1e9)
     labels = torch.arange(batch_size, device=z1.device)
     labels = torch.cat([labels, labels], dim=0)
-    loss = F.cross_entropy(sim_matrix, labels)
-    return loss
+    return F.cross_entropy(sim_matrix, labels)
 
-# =================== Evaluation Functions ===================
+# -------------------- Evaluation Functions --------------------
+
 def median_smoothing(predictions, kernel_size=3):
     return median_filter(predictions, size=kernel_size)
 
@@ -338,13 +329,13 @@ def viterbi_decode(log_probs, transition_matrix):
     viterbi[0] = log_probs[0]
     for t in range(1, T):
         for j in range(num_classes):
-            trans_scores = viterbi[t-1] + np.log(transition_matrix[:, j] + 1e-8)
+            trans_scores = viterbi[t - 1] + np.log(transition_matrix[:, j] + 1e-8)
             best_prev = np.argmax(trans_scores)
             viterbi[t, j] = trans_scores[best_prev] + log_probs[t, j]
             backpointer[t, j] = best_prev
     best_last_state = np.argmax(viterbi[-1])
     best_path = [best_last_state]
-    for t in range(T-1, 0, -1):
+    for t in range(T - 1, 0, -1):
         best_last_state = backpointer[t, best_last_state]
         best_path.insert(0, best_last_state)
     return best_path
@@ -368,7 +359,7 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
     print("Final Evaluation Report:")
     print(classification_report(all_targets, all_preds))
     cm = confusion_matrix(all_targets, all_preds)
-    plt.figure(figsize=(6,5))
+    plt.figure(figsize=(6, 5))
     plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
     plt.title("Confusion Matrix")
     plt.xlabel("Predicted")
@@ -377,11 +368,12 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
     plt.tight_layout()
     plt.show()
 
-# =================== Training Functions ===================
+# -------------------- Training Functions --------------------
+
 def train_self_supervised(epochs=5, batch_size=64):
     dataset = SelfSupervisedSleepDataset(DATA_DIR)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    model = SelfSupervisedModel(in_channels=1)  # assuming single EEG channel input
+    model = SelfSupervisedModel(in_channels=1)  # using single channel input
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     losses = []
@@ -442,7 +434,6 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
             logits, domain_logits = model(inputs, lambda_=0.1)
             loss = focal_loss(logits, targets)
             if domain_logits is not None:
-                # Dummy domain labels (all zeros); replace with actual subject IDs if available
                 dummy_domain = torch.zeros(targets.size(0), dtype=torch.long, device=device)
                 domain_loss = F.cross_entropy(domain_logits, dummy_domain)
                 loss = loss + 0.1 * domain_loss
@@ -507,7 +498,7 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
     torch.save(model.state_dict(), os.path.join(RESULTS_DIR, "supervised_model.pth"))
     print("Supervised training complete.")
 
-# =================== Main Entry Point ===================
+# -------------------- Main Entry Point --------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Sleep-EDF Preprocessing and Training Pipeline")
