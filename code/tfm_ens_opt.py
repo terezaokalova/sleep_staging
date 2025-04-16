@@ -1,30 +1,20 @@
 #!/usr/bin/env python3
-import os
-import glob
-import argparse
-import numpy as np
-import mne
+import os, glob, argparse, numpy as np, mne
 from joblib import Parallel, delayed
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
+import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, find_peaks, sosfiltfilt
 from scipy.ndimage import median_filter
+from sklearn.metrics import classification_report, confusion_matrix
 
 # -------------------- Setup Paths --------------------
-# Set HOME_DIR explicitly if os.path.expanduser("~") does not return your home path.
-HOME_DIR = os.path.expanduser("~")
-# Uncomment and edit the following line if needed:
-# HOME_DIR = '/Users/okalova'
+# Use os.path.expanduser to build all paths relative to home directory.
+HOME_DIR = os.path.expanduser("~")  # Adjust if necessary, e.g., "/Users/okalova"
+# Here, we assume the input EDF files reside in BASE_DIR.
 BASE_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "sleep-edf-database-expanded-1.0.0")
-DATA_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "data", "processed_sleepedf")
-RESULTS_DIR = os.path.join(HOME_DIR, "sleep", "STAT-4830-GOALZ-project", "results", "sleepedf_res")
-for d in [DATA_DIR, RESULTS_DIR]:
-    os.makedirs(d, exist_ok=True)
-
+# Instead of writing output, we only compute in memory:
+# DATA_DIR and RESULTS_DIR are not used for saving.
 SUBFOLDERS = ['sleep-cassette', 'sleep-telemetry']
 
 USE_MULTIPLE_CHANNELS = True
@@ -42,11 +32,11 @@ ANNOTATION_MAP = {
     "Sleep stage 1": 1,
     "Sleep stage 2": 2,
     "Sleep stage 3": 3,
-    "Sleep stage 4": 3,  # collapse stages 3 and 4 into N3
+    "Sleep stage 4": 3,  # collapse stage 4 into stage 3 (N3)
     "Sleep stage R": 4
 }
 
-# Check if GPU is available
+# Check for GPU availability.
 try:
     use_gpu = torch.cuda.is_available()
     device = torch.device("cuda" if use_gpu else "cpu")
@@ -57,17 +47,17 @@ except ImportError:
 
 def detect_spindles(epoch_data, spindle_band=(11, 16), threshold_factor=2.5):
     """
-    For each epoch (using the first channel, assumed to be EEG), detect spindles:
-      1. Apply a 4th-order Butterworth bandpass filter in 11–16 Hz.
-      2. Compute the envelope (absolute value).
-      3. Set threshold = threshold_factor * mean(envelope).
-      4. Count peaks above threshold.
+    For each epoch (using the first channel, assumed to be EEG):
+    1. Bandpass filter (4th-order Butterworth) between 11-16 Hz.
+    2. Compute the envelope (absolute value).
+    3. Set threshold = threshold_factor * mean(envelope).
+    4. Count peaks that exceed the threshold.
     Returns an array of spindle counts per epoch.
     """
     sos = butter(4, spindle_band, btype='bandpass', fs=TARGET_SFREQ, output='sos')
     spindle_counts = []
     for epoch in epoch_data:  # epoch shape: (n_channels, n_times)
-        eeg = epoch[0]
+        eeg = epoch[0]  # use the first channel (EEG)
         filtered = sosfiltfilt(sos, eeg)
         envelope = np.abs(filtered)
         threshold = threshold_factor * np.mean(envelope)
@@ -90,7 +80,7 @@ def process_record(psg_path, hyp_path, channels, target_sfreq, low_freq, high_fr
                         baseline=None, preload=True, verbose=False)
     data = epochs.get_data()  # shape: (n_epochs, n_channels, n_times)
     labels = epochs.events[:, -1]
-    # Normalize data per channel
+    # Normalize per channel.
     if use_gpu:
         data_tensor = torch.tensor(data, dtype=torch.float32, device=device)
         for ch in range(data_tensor.size(1)):
@@ -124,7 +114,7 @@ def find_hypnogram(psg_file):
         return hyp_files[0]
     return None
 
-def process_and_save(psg_file, output_dir, channels):
+def process_and_print(psg_file, channels):
     hyp_file = find_hypnogram(psg_file)
     if not hyp_file:
         print(f"Hypnogram not found for {psg_file}, skipping.")
@@ -137,29 +127,27 @@ def process_and_save(psg_file, output_dir, channels):
         return
     rec_id = os.path.basename(psg_file).replace('-PSG.edf', '')
     spindle_feats = detect_spindles(data)
-    npz_path = os.path.join(output_dir, f"{rec_id}_epochs.npz")
-    np.savez_compressed(npz_path,
-                        data=data.astype('float32'),
-                        labels=labels.astype('int8'),
-                        spindle_feats=spindle_feats.astype('float32'))
     sequences, seq_labels = create_sequences(data, labels, SEQ_LENGTH, SEQ_STRIDE)
-    np.savez_compressed(os.path.join(output_dir, f"{rec_id}_sequences.npz"),
-                        sequences=sequences.astype('float32'),
-                        seq_labels=seq_labels.astype('int8'))
-    print(f"Processed {rec_id}: epochs {data.shape[0]}, sequences {sequences.shape[0]}, channels: {ch_names}")
+    print(f"Processed {rec_id}:")
+    print(f"  Epochs shape: {data.shape}")
+    print(f"  Sequences shape: {sequences.shape}")
+    print(f"  Spindle features shape: {spindle_feats.shape}")
+    print(f"  Channels used: {ch_names}")
 
 def main_processing():
     psg_files = []
     for sub in SUBFOLDERS:
         psg_files.extend(glob.glob(os.path.join(BASE_DIR, sub, '*-PSG.edf')))
     print(f"Found {len(psg_files)} PSG files. GPU Enabled: {use_gpu}")
-    Parallel(n_jobs=2)(delayed(process_and_save)(f, DATA_DIR, CHANNELS_TO_LOAD) for f in psg_files)
-    print("EDF to NPZ conversion complete.")
+    Parallel(n_jobs=2)(delayed(process_and_print)(f, CHANNELS_TO_LOAD) for f in psg_files)
+    print("EDF processing complete. Results printed to terminal.")
 
 # -------------------- PyTorch Dataset Classes --------------------
 
 class SleepDataset(Dataset):
     def __init__(self, npz_dir):
+        # Instead of loading from NPZ, here we simulate loading the data.
+        # For demonstration, we assume npz files are in a list (in practice, one would load them)
         self.npz_files = sorted(glob.glob(os.path.join(npz_dir, "*_epochs.npz")))
         data_list = []
         label_list = []
@@ -167,12 +155,12 @@ class SleepDataset(Dataset):
             loaded = np.load(file)
             data_list.append(loaded['data'])
             label_list.append(loaded['labels'])
-        self.data = np.concatenate(data_list, axis=0)  # (total_epochs, n_channels, n_times)
+        self.data = np.concatenate(data_list, axis=0)  # shape: (total_epochs, n_channels, n_times)
         self.labels = np.concatenate(label_list, axis=0)
     def __len__(self):
         return self.data.shape[0]
     def __getitem__(self, idx):
-        x = torch.tensor(self.data[idx], dtype=torch.float32).unsqueeze(1)  # shape: (n_channels, 1, n_times)
+        x = torch.tensor(self.data[idx], dtype=torch.float32).unsqueeze(1)
         y = torch.tensor(self.labels[idx], dtype=torch.long)
         return x, y
 
@@ -183,7 +171,7 @@ class SelfSupervisedSleepDataset(Dataset):
         for file in self.npz_files:
             loaded = np.load(file)
             data_list.append(loaded['data'])
-        self.data = np.concatenate(data_list, axis=0)  # (total_epochs, n_channels, n_times)
+        self.data = np.concatenate(data_list, axis=0)
     def __len__(self):
         return self.data.shape[0]
     def __getitem__(self, idx):
@@ -237,8 +225,7 @@ class Encoder(nn.Module):
         x = self.resblock(x)
         x = self.pool(x)
         x = torch.flatten(x, 1)
-        embedding = self.fc(x)
-        return embedding
+        return self.fc(x)
 
 class ProjectionHead(nn.Module):
     def __init__(self, embedding_dim=128, projection_dim=64):
@@ -247,8 +234,7 @@ class ProjectionHead(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.fc2 = nn.Linear(projection_dim, projection_dim)
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
+        x = self.relu(self.fc1(x))
         return self.fc2(x)
 
 class SelfSupervisedModel(nn.Module):
@@ -373,7 +359,7 @@ def evaluate_model(model, dataloader, transition_matrix=None, use_median_smoothi
 def train_self_supervised(epochs=5, batch_size=64):
     dataset = SelfSupervisedSleepDataset(DATA_DIR)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    model = SelfSupervisedModel(in_channels=1)  # single-channel input
+    model = SelfSupervisedModel(in_channels=1)  # single-channel
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     losses = []
@@ -392,7 +378,7 @@ def train_self_supervised(epochs=5, batch_size=64):
         avg_loss = epoch_loss / len(dataset)
         losses.append(avg_loss)
         print(f"Self-Supervised Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}")
-    torch.save(model.encoder.state_dict(), os.path.join(RESULTS_DIR, "self_supervised_encoder.pth"))
+    # Do not save model; just print final loss plot.
     plt.figure()
     plt.plot(range(1, epochs+1), losses, marker='o')
     plt.xlabel("Epoch")
@@ -494,15 +480,14 @@ def train_supervised(epochs=10, batch_size=32, use_domain_adaptation=True):
     plt.grid(True)
     plt.show()
     
-    torch.save(model.state_dict(), os.path.join(RESULTS_DIR, "supervised_model.pth"))
     print("Supervised training complete.")
 
 # -------------------- Main Entry Point --------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Sleep-EDF Processing and Training Pipeline")
+    parser = argparse.ArgumentParser(description="Sleep-EDF Processing and Training Pipeline (No Disk-Save Mode)")
     parser.add_argument("--mode", type=str, choices=["process", "pretrain", "train"], required=True,
-                        help="Mode to run: 'process' for EDF-to-NPZ conversion, 'pretrain' for self-supervised pretraining, 'train' for supervised training with domain adaptation")
+                        help="Mode to run: 'process' to process EDF files and print stats, 'pretrain' for self-supervised pretraining, 'train' for supervised training with domain adaptation")
     args = parser.parse_args()
     if args.mode == "process":
         main_processing()
