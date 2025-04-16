@@ -5,10 +5,13 @@ import numpy as np
 import mne
 from joblib import Parallel, delayed
 
-# Configuration
-BASE_DIR = '/Users/tereza/spring_2025/STAT_4830/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
+# server path
+BASE_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
+DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
+# terez localova
+# BASE_DIR = '/Users/tereza/spring_2025/STAT_4830/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
+# DATA_DIR = '/Users/tereza/spring_2025/STAT_4830/STAT-4830-GOALZ-project/data/processed_sleepedf'
 SUBFOLDERS = ['sleep-cassette', 'sleep-telemetry']
-DATA_DIR = '/Users/tereza/spring_2025/STAT_4830/STAT-4830-GOALZ-project/data/processed_sleepedf'
 os.makedirs(DATA_DIR, exist_ok=True)
 
 USE_MULTIPLE_CHANNELS = True
