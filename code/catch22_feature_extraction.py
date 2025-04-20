@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 import time
-import catch22  # The catch22 library for extracting features
+import pycatch22 as catch22
 
 # Configuration for the Borel server
 BASE_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
