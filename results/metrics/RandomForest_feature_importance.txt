@@ -1,0 +1,22 @@
+Top 20 Important Features for RandomForest:
+
+1. eeg_CO_Embed2_Dist_tau_d_expfit_meandiff: 0.069322
+2. eeg_CO_trev_1_num: 0.063044
+3. eeg_DN_OutlierInclude_n_001_mdrmd: 0.053596
+4. eeg_CO_FirstMin_ac: 0.049215
+5. eog_PD_PeriodicityWang_th0_01: 0.049195
+6. eog_SB_BinaryStats_mean_longstretch1: 0.048543
+7. eeg_CO_f1ecac: 0.044106
+8. eog_CO_FirstMin_ac: 0.042001
+9. eog_IN_AutoMutualInfoStats_40_gaussian_fmmi: 0.032999
+10. eog_SB_MotifThree_quantile_hh: 0.030934
+11. eeg_IN_AutoMutualInfoStats_40_gaussian_fmmi: 0.030886
+12. eog_FC_LocalSimple_mean1_tauresrat: 0.030489
+13. eog_DN_OutlierInclude_n_001_mdrmd: 0.027326
+14. eog_SB_TransitionMatrix_3ac_sumdiagcov: 0.027005
+15. eeg_SB_BinaryStats_mean_longstretch1: 0.024977
+16. eog_SP_Summaries_welch_rect_area_5_1: 0.022709
+17. eeg_DN_OutlierInclude_p_001_mdrmd: 0.022071
+18. eog_CO_Embed2_Dist_tau_d_expfit_meandiff: 0.020880
+19. eeg_PD_PeriodicityWang_th0_01: 0.020759
+20. eeg_CO_HistogramAMI_even_2_5: 0.020053

@@ -146,9 +146,13 @@ class HybridSleepDataset(Dataset):
             c22_list.append(feats)
             lbl_list.append(labels.astype(np.int64))
 
-        self.sequences   = torch.from_numpy(np.concatenate(seq_list,axis=0))
-        self.c22_feats   = torch.from_numpy(np.concatenate(c22_list,axis=0))
-        self.seq_labels  = torch.from_numpy(np.concatenate(lbl_list,axis=0))
+        # self.sequences   = torch.from_numpy(np.concatenate(seq_list,axis=0))
+        # self.c22_feats   = torch.from_numpy(np.concatenate(c22_list,axis=0))
+        # self.seq_labels  = torch.from_numpy(np.concatenate(lbl_list,axis=0))
+        self.raw    = torch.from_numpy(np.stack(seqs,   axis=0))  # (N_segments, S, 2, T)
+        self.c22    = torch.from_numpy(np.stack(c22s,   axis=0))  # (N_segments, S, feat_dim)
+        self.labels = torch.from_numpy(np.stack(labels, axis=0))  # (N_segments, S)
+
 
     def __len__(self):
         return len(self.sequences)

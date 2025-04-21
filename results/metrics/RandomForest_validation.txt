@@ -1,0 +1,16 @@
+Validation Results for RandomForest:
+Accuracy: 0.8090
+Macro F1: 0.6436
+
+Classification Report:
+              precision    recall  f1-score   support
+
+        Wake       0.96      0.88      0.92     53146
+          N1       0.28      0.42      0.33      4285
+          N2       0.72      0.73      0.72     15601
+          N3       0.49      0.84      0.62      2860
+         REM       0.61      0.63      0.62      5083
+
+    accuracy                           0.81     80975
+   macro avg       0.61      0.70      0.64     80975
+weighted avg       0.84      0.81      0.82     80975

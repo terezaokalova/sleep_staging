@@ -1,0 +1,9 @@
+Precision-Recall AUC values for HistGradientBoosting:
+
+Wake: 0.9910
+N1: 0.3350
+N2: 0.8665
+N3: 0.8540
+REM: 0.6794
+
+Macro-average AUC: 0.7452

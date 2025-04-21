@@ -1,0 +1,9 @@
+Precision-Recall AUC values for RandomForest:
+
+Wake: 0.9824
+N1: 0.3270
+N2: 0.8465
+N3: 0.8308
+REM: 0.6267
+
+Macro-average AUC: 0.7227

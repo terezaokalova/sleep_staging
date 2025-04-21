@@ -1,0 +1,9 @@
+ROC AUC values for RandomForest:
+
+Wake: 0.9716
+N1: 0.8966
+N2: 0.9534
+N3: 0.9863
+REM: 0.8844
+
+Macro-average AUC: 0.9385
