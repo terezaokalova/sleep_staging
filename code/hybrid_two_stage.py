@@ -76,10 +76,12 @@ class Stage1Detector(nn.Module):
         self.fc = nn.Linear(64,2)
 
     def forward(self, x):
-        # now x is (batch, channels, time)
-        h = self.conv(x).squeeze(-1)   # -> (batch, 64)
-        return self.fc(h)              # -> (batch, 2)
-
+        # x: (batch, S, channels, time)
+        B, S, C, T = x.shape
+        x = x.view(B*S, C, T)            # → (B*S, C, T)
+        h = self.conv(x).squeeze(-1)     # → (B*S, 64)
+        logits = self.fc(h)              # → (B*S, 2)
+        return logits.view(B, S, 2)      # → (batch, S, 2)
 
 def train_stage1(detector, loader, opt):
     detector.train()
