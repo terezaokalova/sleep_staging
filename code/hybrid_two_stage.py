@@ -76,40 +76,37 @@ class Stage1Detector(nn.Module):
         self.fc = nn.Linear(64,2)
 
     def forward(self, x):
-        # now x is (batch, channels, time)
-        h = self.conv(x).squeeze(-1)  # -> (batch, 64)
-        return self.fc(h)             # -> (batch, 2)
-
+        # x: (batch, channels, time)
+        h = self.conv(x).squeeze(-1)   # -> (batch, 64)
+        return self.fc(h)              # -> (batch, 2)
 
 def train_stage1(detector, loader, opt):
     detector.train()
     total_loss = 0.0
-    total      = 0
-    for x, y in loader:
-        # x: (batch, C, T), y: (batch,)
-        x, y = x.to(device), y.to(device)
+    total = 0
+    for x,y in loader:
+        x, y = x.to(device), y.to(device)       # x: (B, C, T), y: (B,)
         opt.zero_grad()
-        logits = detector(x)                     # -> (batch, 2)
+        logits = detector(x)                    # (B, 2)
         loss   = F.cross_entropy(logits, y)
         loss.backward()
         opt.step()
         total_loss += loss.item() * x.size(0)
         total      += x.size(0)
-    return total_loss / total
-
+    return total_loss/total
 
 def eval_stage1(detector, loader):
     detector.eval()
     correct = 0
     total   = 0
     with torch.no_grad():
-        for x, y in loader:
+        for x,y in loader:
             x, y   = x.to(device), y.to(device)
-            logits = detector(x)                  # -> (batch, 2)
+            logits = detector(x)                # (B, 2)
             preds  = logits.argmax(dim=1)
-            correct += (preds == y).sum().item()
-            total   += x.size(0)
-    return correct / total
+            correct += (preds==y).sum().item()
+            total   += y.size(0)
+    return correct/total
 
 #  Hybrid 5‑way dataset 
 def get_true_subject_id(fn):
@@ -248,42 +245,61 @@ def focal_loss(inputs, targets,
 
 def train_epoch2(model, detector, loader, opt):
     model.train()
-    total=0; loss_sum=0
-    for raw,c22,labels in loader:
-        raw,c22,labels = raw.to(device),c22.to(device),labels.to(device)
-        B,S,_,_ = raw.shape
-        # detector on every epoch in window
+    total = 0
+    loss_sum = 0.0
+
+    for raw, c22, labels in loader:
+        # raw: (B, C, T), c22: (B, SEQ_LENGTH, feat), labels: (B,)
+        raw, c22, labels = raw.to(device), c22.to(device), labels.to(device)
+
+        # 1) Stage 1 detector on each window
         with torch.no_grad():
-            det_in = raw.view(B*S, raw.size(2), raw.size(3))
-            det_log = detector(det_in)[:,1].view(B,S)
-        opt.zero_grad()
-        logits = model(raw,c22)
-        logits[:,:,1] = logits[:,:,1] + det_log
-        loss = focal_loss(logits,labels)
+            det_logits = detector(raw)      # -> (B, 2)
+            det_score  = det_logits[:, 1]   # -> (B,)
+
+        # 2) Turn each window into a “seq of length 1”
+        raw_b = raw.unsqueeze(1)           # -> (B, 1, C, T)
+        c22_b = c22.unsqueeze(1)           # -> (B, 1, feat)
+
+        # 3) Forward through transformer + fusion
+        out = model(raw_b, c22_b).squeeze(1)   # -> (B, num_classes)
+        out[:, 1] = out[:, 1] + det_score      # add the N1 bias
+
+        # 4) Compute per‐window loss
+        loss = F.cross_entropy(out, labels)
         loss.backward()
         opt.step()
-        loss_sum += loss.item()*B
-        total    += B
-    return loss_sum/total
+
+        loss_sum += loss.item() * raw.size(0)
+        total    += raw.size(0)
+
+    return loss_sum / total
+
 
 def eval_epoch2(model, detector, loader, crf):
     model.eval()
-    all_preds=[]; all_labels=[]
+    all_preds = []
+    all_labels = []
+
     with torch.no_grad():
-        for raw,c22,labels in loader:
-            raw,c22 = raw.to(device),c22.to(device)
-            B,S,_,_ = raw.shape
-            det_in = raw.view(B*S, raw.size(2), raw.size(3))
-            det_log = detector(det_in)[:,1].view(B,S)
-            logits  = model(raw,c22)
-            logits[:,:,1] = logits[:,:,1] + det_log
-            mask = torch.ones(B,S, dtype=torch.bool, device=device)
-            seqs = crf.decode(logits, mask)
-            for seq,label in zip(seqs,labels):
-                all_preds.extend(seq)
-                all_labels.extend(label.numpy().tolist())
-    acc = np.mean(np.array(all_preds)==np.array(all_labels))
+        for raw, c22, labels in loader:
+            raw, c22, labels = raw.to(device), c22.to(device), labels.to(device)
+
+            # 1) Stage 1 detector
+            det_logits = detector(raw)     # -> (B, 2)
+            det_score  = det_logits[:, 1]  # -> (B,)
+
+            # 2) Transformer on “seq of 1”
+            out = model(raw.unsqueeze(1), c22.unsqueeze(1)).squeeze(1)  # (B, num_classes)
+            out[:, 1] = out[:, 1] + det_score
+
+            preds = out.argmax(dim=1)
+            all_preds .extend(preds .cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
+
+    acc = np.mean(np.array(all_preds) == np.array(all_labels))
     return all_preds, all_labels, acc
+
 
 #  Main 
 def main():
