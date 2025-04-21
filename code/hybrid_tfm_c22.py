@@ -1,1208 +1,373 @@
 #!/usr/bin/env python3
-import os, sys, glob, argparse, numpy as np
-import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import matplotlib.pyplot as plt
-from scipy.ndimage import median_filter
-from sklearn.metrics import classification_report, confusion_matrix
-import pandas as pd
-import joblib
+import os
+import sys
+import glob
 import traceback
+from pathlib import Path
 from datetime import datetime
 
-try:
-    # Data paths - updated to match server paths
-    PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
-    CATCH22_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/c22_processed_sleepedf'
-    RESULTS_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/hybrid_model_results'
-    
-    print(f"Checking directory access:")
-    print(f"  PROCESSED_DATA_DIR exists: {os.path.exists(PROCESSED_DATA_DIR)}")
-    print(f"  CATCH22_DATA_DIR exists: {os.path.exists(CATCH22_DATA_DIR)}")
-    
-    # Create results directory
-    print("Creating output directories...")
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    os.makedirs(os.path.join(RESULTS_DIR, "plots"), exist_ok=True)
-    os.makedirs(os.path.join(RESULTS_DIR, "models"), exist_ok=True)
-    os.makedirs(os.path.join(RESULTS_DIR, "metrics"), exist_ok=True)
-    print("Output directories created successfully")
-    
-    # Set random seed for reproducibility
-    SEED = 42
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-    torch.cuda.manual_seed_all(SEED)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    print("Random seeds set")
-    
-    # Model parameters
-    BATCH_SIZE = 32
-    NUM_EPOCHS = 35
-    LEARNING_RATE = 1e-5  # Reduced from 1e-4 to improve stability
-    TRAIN_RATIO = 0.8
-    SEQ_LENGTH = 20
-    SEQ_STRIDE = 10 
-    print("Model parameters initialized")
-    
-    # Check for GPU availability
-    try:
-        use_gpu = torch.cuda.is_available()
-        if use_gpu:
-            device = torch.device("cuda")
-            print(f"GPU available: {torch.cuda.get_device_name(0)}")
-            # Add GPU memory check
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
-            print(f"GPU memory: {gpu_memory:.2f} GB")
-        else:
-            device = torch.device("cpu")
-            print("No GPU available; using CPU")
-    except Exception as e:
-        use_gpu = False
-        device = torch.device("cpu")
-        print(f"Error checking GPU: {e}. Using CPU.")
-    
-    # Verify data directories have files
-    print("Checking for data files...")
-    raw_files = glob.glob(os.path.join(PROCESSED_DATA_DIR, '*_sequences.npz'))
-    c22_files = glob.glob(os.path.join(CATCH22_DATA_DIR, '*_c22.csv'))
-    print(f"Found {len(raw_files)} raw sequence files")
-    print(f"Found {len(c22_files)} Catch22 feature files")
-    
-    if len(raw_files) == 0 or len(c22_files) == 0:
-        raise ValueError("No data files found in specified directories!")
-    
-except Exception as e:
-    print("ERROR DURING INITIALIZATION:")
-    print(traceback.format_exc())
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from sklearn.metrics import classification_report, confusion_matrix
+
+# -------------------------
+# ==== Initialization ====
+# -------------------------
+HOME = Path.home()
+BASE = HOME / "sleep" / "STAT-4830-GOALZ-project" / "data"
+PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
+CATCH22_DATA_DIR   = BASE / "c22_processed_sleepedf"
+RESULTS_DIR        = BASE / "hybrid_model_results"
+
+print("Checking directory access:")
+print(f"  {PROCESSED_DATA_DIR!s} exists: {PROCESSED_DATA_DIR.exists()}")
+print(f"  {CATCH22_DATA_DIR!s} exists: {CATCH22_DATA_DIR.exists()}")
+
+if not PROCESSED_DATA_DIR.exists() or not CATCH22_DATA_DIR.exists():
+    print("ERROR: Data directories not found. Please re-run preprocessing & Catch22 steps.")
     sys.exit(1)
 
+# Create results subdirs
+for sub in ["plots","models","metrics"]:
+    (RESULTS_DIR/sub).mkdir(parents=True, exist_ok=True)
+
+# Reproducibility
+SEED = 42
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+# Hyperparameters
+BATCH_SIZE    = 32
+NUM_EPOCHS    = 35
+LEARNING_RATE = 1e-5
+TRAIN_RATIO   = 0.8
+SEQ_LENGTH    = 20
+SEQ_STRIDE    = 10
+
+# Device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# -------------------------
+# ==== Utilities  =========
+# -------------------------
 def get_true_subject_id(filename):
-    """Extract true subject ID ignoring the night number"""
-    basename = os.path.basename(filename).split('_')[0]
-    if basename.startswith('SC4'):
-        return basename[:5]  # SC4xx - first 5 chars for Sleep Cassette
-    elif basename.startswith('ST7'):
-        return basename[:5]  # ST7xx - first 5 chars for Sleep Telemetry
-    else:
-        return basename[:6]  # Fallback to original logic
+    basename = Path(filename).stem
+    if basename.startswith(("SC4","ST7")):
+        return basename[:5]
+    return basename[:6]
 
 def group_by_true_subjects(data_dir):
-    """Map true subject IDs to their recording IDs"""
-    all_files = glob.glob(os.path.join(data_dir, '*_sequences.npz'))
-    
-    true_subject_map = {}
-    for f in all_files:
-        recording_id = os.path.basename(f).split('_')[0]
-        true_subject = get_true_subject_id(f)
-        
-        if true_subject not in true_subject_map:
-            true_subject_map[true_subject] = []
-        true_subject_map[true_subject].append(recording_id)
-    
-    print(f"Found {len(true_subject_map)} unique subjects")
-    
-    return true_subject_map
+    files = glob.glob(str(data_dir/"*_sequences.npz"))
+    subj_map = {}
+    for f in files:
+        rid = Path(f).stem.split("_")[0]
+        subj = get_true_subject_id(rid)
+        subj_map.setdefault(subj, []).append(rid)
+    return subj_map
 
-def split_true_subjects(data_dir, train_ratio=0.8, random_state=42):
-    """Split data by true subject IDs (not by recording/night)"""
-    true_subject_map = group_by_true_subjects(data_dir)
-    
-    true_subjects = list(true_subject_map.keys())
-    
+def split_true_subjects(data_dir, train_ratio=TRAIN_RATIO, random_state=SEED):
+    subj_map = group_by_true_subjects(data_dir)
+    subs = list(subj_map.keys())
     np.random.seed(random_state)
-    np.random.shuffle(true_subjects)
-    
-    n_train = int(len(true_subjects) * train_ratio)
-    train_true_subjects = true_subjects[:n_train]
-    test_true_subjects = true_subjects[n_train:]
-    
-    train_recording_ids = []
-    for subject in train_true_subjects:
-        train_recording_ids.extend(true_subject_map[subject])
-    
-    test_recording_ids = []
-    for subject in test_true_subjects:
-        test_recording_ids.extend(true_subject_map[subject])
-    
-    print(f"Training on {len(train_recording_ids)} recordings from {len(train_true_subjects)} subjects")
-    print(f"Testing on {len(test_recording_ids)} recordings from {len(test_true_subjects)} subjects")
-    
-    return train_recording_ids, test_recording_ids, train_true_subjects, test_true_subjects
+    np.random.shuffle(subs)
+    n_train = int(len(subs)*train_ratio)
+    train_subs = subs[:n_train]
+    test_subs  = subs[n_train:]
+    train_ids = [rid for s in train_subs for rid in subj_map[s]]
+    test_ids  = [rid for s in test_subs  for rid in subj_map[s]]
+    return train_ids, test_ids, train_subs, test_subs
 
+# -------------------------
+# ==== Dataset    =========
+# -------------------------
 class HybridSleepDataset(Dataset):
-    def __init__(self, raw_data_dir, c22_data_dir, patient_ids=None):
-        """
-        Dataset that combines raw signal sequences with Catch22 features
-        Args:
-            raw_data_dir: Directory containing the preprocessed NPZ sequence files
-            c22_data_dir: Directory containing the Catch22 feature CSV files
-            patient_ids: List of patient IDs to include (e.g., ['SC4252', 'SC4231'])
-        """
-        # Get all sequence files and Catch22 files
-        all_raw_files = glob.glob(os.path.join(raw_data_dir, '*_sequences.npz'))
-        all_c22_files = glob.glob(os.path.join(c22_data_dir, '*_c22.csv'))
-        
-        # Filter by patient IDs if specified
-        if patient_ids is not None:
-            self.raw_files = [f for f in all_raw_files if any(pid in os.path.basename(f) for pid in patient_ids)]
-            self.c22_files = [f for f in all_c22_files if any(pid in os.path.basename(f) for pid in patient_ids)]
-        else:
-            self.raw_files = all_raw_files
-            self.c22_files = all_c22_files
-        
-        # Map recording IDs to file paths for easy lookup
-        self.raw_file_map = {os.path.basename(f).split('_')[0]: f for f in self.raw_files}
-        self.c22_file_map = {os.path.basename(f).split('_')[0]: f for f in self.c22_files}
-        
-        # Get common recording IDs between raw and C22 datasets
-        raw_ids = set(self.raw_file_map.keys())
-        c22_ids = set(self.c22_file_map.keys())
-        common_ids = raw_ids.intersection(c22_ids)
-        
-        # Check if we found matching files
-        if len(common_ids) == 0:
-            raise ValueError("No matching recordings found between raw data and Catch22 features!")
-            
-        # Only keep files for recordings that have both raw and C22 data
-        self.recording_ids = sorted(list(common_ids))
-        
-        # Dictionary to store metadata and indices for quick lookup
-        self.recording_data = {}
-        
-        # Lists to store data after loading
-        sequences_list = []
-        c22_features_list = []
-        labels_list = []
-        self.patient_ids = []
-        self.true_subject_ids = []
-        
-        total_sequences = 0
-        c22_feature_dim = None
-        
-        # Process each recording
-        successful_recordings = 0
-        
-        for recording_id in self.recording_ids:
-            try:
-                # Load raw sequence data
-                raw_path = self.raw_file_map[recording_id]
-                raw_data = np.load(raw_path)
-                sequences = raw_data['sequences']  # shape: (n_sequences, seq_len, channels, samples)
-                seq_labels = raw_data['seq_labels']  # shape: (n_sequences, seq_len)
-                
-                # Load Catch22 features
-                c22_path = self.c22_file_map[recording_id]
-                c22_df = pd.read_csv(c22_path)
-                
-                # Get the true subject ID
-                true_subject = get_true_subject_id(recording_id)
-                
-                # Store start and end indices for this recording
-                start_idx = total_sequences
-                n_sequences = sequences.shape[0]
-                end_idx = start_idx + n_sequences
-                
-                # Store metadata for this recording
-                self.recording_data[recording_id] = {
-                    'true_subject': true_subject,
-                    'start_idx': start_idx,
-                    'end_idx': end_idx,
-                    'n_sequences': n_sequences
-                }
-                
-                # Check if sequence length matches number of epochs in C22 features
-                if n_sequences * SEQ_LENGTH != len(c22_df):
-                    print(f"Warning: Mismatch in recording {recording_id}!")
-                    print(f"  Sequences: {n_sequences} x {SEQ_LENGTH} = {n_sequences * SEQ_LENGTH}")
-                    print(f"  C22 epochs: {len(c22_df)}")
-                    
-                    # Get the feature dimension from the C22 DataFrame
-                    if c22_feature_dim is None:
-                        c22_feature_dim = c22_df.drop(columns=['label']).shape[1]
-                    
-                    # Extract the raw features
-                    c22_raw_features = c22_df.drop(columns=['label']).values
-                    
-                    # Create an array to hold the sequence-aligned features
-                    c22_features = np.zeros((n_sequences, SEQ_LENGTH, c22_feature_dim))
-                    
-                    # Reconstruct sequences from epochs based on sequence creation logic:
-                    # sequences were created with length 20 and stride 10
-                    for seq_idx in range(n_sequences):
-                        # Calculate which epochs were used to create this sequence
-                        # For stride=10: seq 0 uses epochs 0-19, seq 1 uses epochs 10-29, etc.
-                        start_epoch = seq_idx * SEQ_STRIDE
-                        end_epoch = start_epoch + SEQ_LENGTH
-                        
-                        # If we have enough epochs, extract the corresponding features
-                        if end_epoch <= len(c22_df):
-                            epoch_features = c22_raw_features[start_epoch:end_epoch]
-                            c22_features[seq_idx] = epoch_features
+    def __init__(self, raw_dir, c22_dir, recording_ids=None):
+        all_raw = glob.glob(str(raw_dir/"*_sequences.npz"))
+        all_c22 = glob.glob(str(c22_dir  /"*_c22.csv"))
+        if recording_ids is not None:
+            all_raw = [p for p in all_raw if any(rid in p for rid in recording_ids)]
+            all_c22 = [p for p in all_c22 if any(rid in p for rid in recording_ids)]
+        self.raw_map = {Path(p).stem.split("_")[0]: p for p in all_raw}
+        self.c22_map = {Path(p).stem.split("_")[0]: p for p in all_c22}
+        common = sorted(set(self.raw_map) & set(self.c22_map))
+        if not common:
+            raise ValueError("No overlapping recordings between raw & Catch22!")
+        self.recording_ids = common
+
+        seq_list, c22_list, lbl_list = [], [], []
+        for rid in common:
+            # load raw
+            data = np.load(self.raw_map[rid])
+            seqs, labels = data["sequences"], data["seq_labels"]
+            # load catch22
+            df = pd.read_csv(self.c22_map[rid])
+            feats = df.drop(columns=["label"]).values
+            # if mismatch, pad/truncate
+            n_seq = seqs.shape[0]
+            expected = n_seq * SEQ_LENGTH
+            if feats.shape[0] != expected:
+                # reconstruct windows
+                feat_dim = feats.shape[1]
+                newf = np.zeros((n_seq, SEQ_LENGTH, feat_dim), dtype=np.float32)
+                for i in range(n_seq):
+                    start = i*SEQ_STRIDE
+                    end   = start+SEQ_LENGTH
+                    if end <= feats.shape[0]:
+                        newf[i] = feats[start:end]
+                    else:
+                        avail = feats.shape[0]-start
+                        if avail>0:
+                            newf[i,:avail] = feats[start:]
+                            newf[i,avail:] = feats[start+avail-1]
                         else:
-                            # Not enough epochs, use what we have and pad the rest
-                            # (this is a fallback and shouldn't happen much)
-                            available = len(c22_df) - start_epoch
-                            if available > 0:
-                                c22_features[seq_idx, :available] = c22_raw_features[start_epoch:]
-                                # Repeat the last available epoch for padding
-                                for i in range(available, SEQ_LENGTH):
-                                    c22_features[seq_idx, i] = c22_features[seq_idx, available-1]
-                            else:
-                                # No data for this sequence, use data from previous sequence
-                                if seq_idx > 0:
-                                    c22_features[seq_idx] = c22_features[seq_idx-1]
-                                # Otherwise, keep zeros
-                else:
-                    # This shouldn't happen given your data, but included for completeness
-                    c22_features = c22_df.drop(columns=['label']).values.reshape(n_sequences, SEQ_LENGTH, -1)
-                
-                # Append data to lists
-                sequences_list.append(sequences)
-                c22_features_list.append(c22_features)
-                labels_list.append(seq_labels)
-                
-                # Add metadata
-                self.patient_ids.extend([recording_id] * n_sequences)
-                self.true_subject_ids.extend([true_subject] * n_sequences)
-                
-                # Update total count
-                total_sequences += n_sequences
-                successful_recordings += 1
-                
-            except Exception as e:
-                print(f"Error processing recording {recording_id}: {str(e)}")
-                continue
-        
-        if successful_recordings == 0:
-            raise ValueError("No recordings were successfully processed! Check your data.")
-            
-        # Concatenate all data
-        self.sequences = np.concatenate(sequences_list, axis=0)
-        self.c22_features = np.concatenate(c22_features_list, axis=0)
-        self.seq_labels = np.concatenate(labels_list, axis=0)
-        
-        # Check for extreme values in the data
-        print(f"Raw sequence stats - min: {self.sequences.min()}, max: {self.sequences.max()}")
-        print(f"C22 feature stats - min: {self.c22_features.min()}, max: {self.c22_features.max()}")
-        
-        # If extreme values are found, apply clipping
-        if np.abs(self.c22_features.max()) > 1e5 or np.abs(self.c22_features.min()) > 1e5:
-            print("Warning: Extreme values found in C22 features, applying clipping")
-            self.c22_features = np.clip(self.c22_features, -1e5, 1e5)
-            
-        # Convert to pytorch tensors
-        self.sequences = torch.from_numpy(self.sequences).float()
-        self.c22_features = torch.from_numpy(self.c22_features).float()
-        self.seq_labels = torch.from_numpy(self.seq_labels).long()
-        
-        print(f"Loaded {successful_recordings} out of {len(self.recording_ids)} recordings")
-        print(f"Total sequences: {len(self.sequences)}")
-        print(f"Raw sequence shape: {self.sequences.shape}")
-        print(f"Catch22 feature shape: {self.c22_features.shape}")
-        
-        # Print class distribution
-        unique, counts = np.unique(self.seq_labels.numpy().flatten(), return_counts=True)
-        print("\nClass distribution:")
-        for label, count in zip(unique, counts):
-            print(f"Class {label} ({'W N1 N2 N3 REM'.split()[label]}): {count} samples ({count/len(self.seq_labels.flatten())*100:.2f}%)")
+                            newf[i] = newf[i-1]
+                feats = newf
+            else:
+                feats = feats.reshape(n_seq, SEQ_LENGTH, -1).astype(np.float32)
+            seq_list.append(seqs.astype(np.float32))
+            c22_list.append(feats)
+            lbl_list.append(labels.astype(np.int64))
+
+        self.sequences   = torch.from_numpy(np.concatenate(seq_list,axis=0))
+        self.c22_feats   = torch.from_numpy(np.concatenate(c22_list,axis=0))
+        self.seq_labels  = torch.from_numpy(np.concatenate(lbl_list,axis=0))
 
     def __len__(self):
-        return self.sequences.shape[0]
-
+        return len(self.sequences)
     def __getitem__(self, idx):
-        return self.sequences[idx], self.c22_features[idx], self.seq_labels[idx]
+        return self.sequences[idx], self.c22_feats[idx], self.seq_labels[idx]
 
-def create_balanced_sampler(dataset):
-    """
-    Create a weighted sampler to balance class distributions
-    """
-    # Get all labels (we'll use the first label of each sequence since sequences are contiguous)
-    all_labels = dataset.seq_labels[:, 0].numpy()  # Only take first label of each sequence
-    
-    # Compute class weights
-    classes = np.unique(all_labels)
-    class_weights = {}
-    total_samples = len(all_labels)
-    for c in classes:
-        class_weights[c] = float(total_samples) / (len(classes) * np.sum(all_labels == c))
-    
-    # Create sample weights
-    sample_weights = np.array([class_weights[label] for label in all_labels])
-    
-    # Create sampler with length equal to dataset
-    sampler = torch.utils.data.WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(dataset),  # Use actual dataset length
-        replacement=True
-    )
-    
-    return sampler, torch.FloatTensor([class_weights[c] for c in sorted(class_weights.keys())])
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.downsample = None
-        if stride != 1 or in_channels != out_channels:
-            self.downsample = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
-                nn.BatchNorm2d(out_channels)
-            )
-    def forward(self, x):
-        identity = x
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        if self.downsample is not None:
-            identity = self.downsample(x)
-        out += identity
-        return self.relu(out)
-
+# -------------------------
+# ==== Model      =========
+# -------------------------
 class EpochEncoder(nn.Module):
     def __init__(self, embedding_dim=128):
         super().__init__()
-        self.conv1 = nn.Conv1d(2, 16, kernel_size=5, stride=1, padding=2)
-        self.bn1 = nn.BatchNorm1d(16)  # Added batch normalization
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm1d(32)  # Added batch normalization
-        self.conv3 = nn.Conv1d(32, 64, kernel_size=3, stride=1, padding=1)
-        self.bn3 = nn.BatchNorm1d(64)  # Added batch normalization
-        self.pool = nn.MaxPool1d(2)
-        
-        # Pre-calculate FC input dimension
-        # For sequence length 3000: 3000/2/2/2 = 375
-        # So the dimension is 64 * 375 = 24000
-        self.fc_input_dim = 64 * 375
-        self.fc = nn.Linear(self.fc_input_dim, embedding_dim)
-        self.embedding_dim = embedding_dim
-        self.dropout = nn.Dropout(0.1)
-        
+        self.conv1 = nn.Conv1d(2,16,kernel_size=5,padding=2)
+        self.conv2 = nn.Conv1d(16,32,kernel_size=3,padding=1)
+        self.conv3 = nn.Conv1d(32,64,kernel_size=3,padding=1)
+        self.pool  = nn.MaxPool1d(2)
+        self.fc     = nn.Linear(64*375, embedding_dim)
+        self.ln     = nn.LayerNorm(embedding_dim)
+        self.dropout= nn.Dropout(0.1)
     def forward(self, x):
-        # x shape: (batch, seq_len, channels, time_points)
-        batch_size, seq_len, channels, time_points = x.shape
-        
-        # Process each sequence element independently
-        x = x.view(batch_size * seq_len, channels, time_points)
-        
-        x = self.pool(torch.relu(self.bn1(self.conv1(x))))
-        x = self.pool(torch.relu(self.bn2(self.conv2(x))))
-        x = self.pool(torch.relu(self.bn3(self.conv3(x))))
-        
-        x = x.view(batch_size * seq_len, -1)  # Flatten
-        x = self.dropout(torch.relu(self.fc(x)))
-        
-        # Reshape back to sequence form
-        x = x.view(batch_size, seq_len, -1)
-        return x
+        B,S,C,T = x.shape
+        x = x.view(B*S, C, T)
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
+        x = x.view(B*S, -1)
+        x = self.dropout(F.relu(self.fc(x)))
+        x = self.ln(x)
+        return x.view(B,S,-1)
 
 class C22Encoder(nn.Module):
-    """
-    Encoder for Catch22 features
-    """
     def __init__(self, input_dim, embedding_dim=64):
         super().__init__()
-        self.bn_input = nn.BatchNorm1d(input_dim)  # Added batch normalization
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.bn1 = nn.BatchNorm1d(128)  # Added batch normalization
-        self.fc2 = nn.Linear(128, embedding_dim)
-        self.dropout = nn.Dropout(0.1)
-        
+        self.ln0   = nn.LayerNorm(input_dim)
+        self.fc1   = nn.Linear(input_dim,128)
+        self.ln1   = nn.LayerNorm(128)
+        self.fc2   = nn.Linear(128, embedding_dim)
+        self.ln2   = nn.LayerNorm(embedding_dim)
+        self.dropout= nn.Dropout(0.1)
     def forward(self, x):
-        # x shape: (batch, seq_len, c22_features)
-        batch_size, seq_len, input_dim = x.shape
-        
-        # Process each sequence element independently
-        x = x.view(batch_size * seq_len, input_dim)
-        
-        # Apply BatchNorm to input
-        x = self.bn_input(x)
-        
-        x = self.dropout(torch.relu(self.bn1(self.fc1(x))))
-        x = self.dropout(torch.relu(self.fc2(x)))
-        
-        # Reshape back to sequence form
-        x = x.view(batch_size, seq_len, -1)
-        return x
+        B,S,D = x.shape
+        x = x.view(B*S, D)
+        x = self.dropout(F.relu(self.ln0(x)))
+        x = self.dropout(F.relu(self.ln1(self.fc1(x))))
+        x = self.dropout(F.relu(self.ln2(self.fc2(x))))
+        return x.view(B,S,-1)
 
 class HybridSleepTransformer(nn.Module):
-    def __init__(self, c22_dim, raw_embedding_dim=128, c22_embedding_dim=64, 
-                 num_classes=5, num_layers=2, num_heads=4, dropout=0.1, seq_length=20):
+    def __init__(self, c22_dim, raw_emb=128, c22_emb=64, num_classes=5,
+                 num_layers=2, num_heads=4, dropout=0.1, seq_length=20):
         super().__init__()
-        
-        # Encoders for different modalities
-        self.epoch_encoder = EpochEncoder(raw_embedding_dim)
-        self.c22_encoder = C22Encoder(c22_dim, c22_embedding_dim)
-        
-        # Combined embedding dimension
-        self.combined_dim = raw_embedding_dim + c22_embedding_dim
-        
-        # Fusion layer
-        self.fusion = nn.Linear(self.combined_dim, self.combined_dim)
-        self.bn_fusion = nn.BatchNorm1d(self.combined_dim)  # Added batch normalization
-        
-        # Positional encoding
-        self.pos_encoder = nn.Parameter(torch.randn(1, seq_length, self.combined_dim))
-        
-        # Transformer layers
-        encoder_layer = nn.TransformerEncoderLayer(
+        self.epoch_enc = EpochEncoder(raw_emb)
+        self.c22_enc   = C22Encoder(c22_dim, c22_emb)
+        self.combined_dim = raw_emb + c22_emb
+        self.fusion      = nn.Linear(self.combined_dim, self.combined_dim)
+        self.ln_fusion   = nn.LayerNorm(self.combined_dim)
+        self.pos_encoder = nn.Parameter(torch.randn(1,seq_length,self.combined_dim))
+        enc_layer = nn.TransformerEncoderLayer(
             d_model=self.combined_dim,
             nhead=num_heads,
             dim_feedforward=4*self.combined_dim,
             dropout=dropout,
             batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # Output layer
-        self.fc_out = nn.Linear(self.combined_dim, num_classes)
-        
-        # Initialize weights
+        self.transformer = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+        self.fc_out      = nn.Linear(self.combined_dim, num_classes)
         self._init_weights()
-        
+
     def _init_weights(self):
-        """Initialize weights for better convergence"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-        
-    def forward(self, raw_signals, c22_features):
-        # raw_signals shape: (batch, seq_len, channels, time_points)
-        # c22_features shape: (batch, seq_len, c22_dim)
-        
-        # Get embeddings for each modality
-        raw_embeddings = self.epoch_encoder(raw_signals)
-        c22_embeddings = self.c22_encoder(c22_features)
-        
-        # Concatenate embeddings along feature dimension
-        combined = torch.cat([raw_embeddings, c22_embeddings], dim=2)
-        
-        # Apply fusion layer
-        batch_size, seq_len, feat_dim = combined.shape
-        combined = combined.view(batch_size * seq_len, feat_dim)
-        combined = self.bn_fusion(combined)
-        combined = torch.relu(self.fusion(combined))
-        combined = combined.view(batch_size, seq_len, feat_dim)
-        
-        # Add positional encoding
-        combined = combined + self.pos_encoder
-        
-        # Pass through transformer
-        encoded = self.transformer_encoder(combined)
-        
-        # Get predictions for each time step
-        logits = self.fc_out(encoded)
-        
-        return logits
+                if m.bias is not None: nn.init.constant_(m.bias,0)
 
-def focal_loss_with_n1_focus(inputs, targets, alpha_general=0.25, alpha_n1=0.75, gamma=2):
-    """
-    Focal Loss with specific focus on N1 class (class index 1)
-    - alpha_general: weight for all non-N1 classes
-    - alpha_n1: higher weight specifically for N1 class
-    - gamma: focusing parameter - same as standard focal loss
-    """
-    # Get class dimension
-    num_classes = inputs.size(-1)
-    
-    # Add small epsilon for numerical stability
-    eps = 1e-7
-    
-    # Calculate standard cross entropy (per element)
-    ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-    pt = torch.exp(-ce_loss) + eps  # Add epsilon to prevent zero
-    
-    # Create a mask for N1 instances (where target == 1)
-    n1_mask = (targets == 1).float()
-    
-    # Apply different alpha values for N1 vs other classes
-    alphas = alpha_general * (1 - n1_mask) + alpha_n1 * n1_mask
-    
-    # Calculate the full focal loss with the appropriate alpha per sample
-    loss = alphas * ((1 - pt) ** gamma) * ce_loss
-    
-    # Check for NaN values
-    if torch.isnan(loss).any():
-        print("Warning: NaN detected in loss calculation")
-        # Replace NaN values with a small constant
-        loss = torch.where(torch.isnan(loss), torch.tensor(0.1).to(loss.device), loss)
-    
-    return loss.mean()
+    def forward(self, raw, c22):
+        r = self.epoch_enc(raw)
+        c = self.c22_enc(c22)
+        x = torch.cat([r,c], dim=2)                # (B, S, D)
+        B,S,D = x.shape
+        x = x.view(B*S, D)
+        x = F.relu(self.ln_fusion(self.fusion(x)))
+        x = x.view(B,S,D) + self.pos_encoder       # add positional
+        x = self.transformer(x)
+        return self.fc_out(x)
 
-def train_epoch(model, dataloader, criterion, optimizer, device):
-    """Train model for one epoch"""
+# -------------------------
+# ==== Loss       =========
+# -------------------------
+def focal_loss(inputs, targets, alpha=0.25, gamma=2.0):
+    """
+    Stable focal loss: uses log_softmax + clamp.
+    """
+    B, S, C = inputs.shape
+    logits = inputs.view(-1, C)
+    tgt    = targets.view(-1)
+    logp   = F.log_softmax(logits, dim=1)
+    p      = logp.exp().clamp(min=1e-7)
+    at     = torch.where(tgt==1,
+                         alpha+0.5,    # boost weight for N1
+                         alpha)
+    ce     = F.nll_loss(logp, tgt, reduction='none')
+    fl     = at * ((1-p)**gamma) * ce
+    return fl.mean()
+
+# -------------------------
+# ==== Training Loop ======
+# -------------------------
+def train_epoch(model, loader, optimizer):
     model.train()
     running_loss = 0.0
-    all_preds = []
-    all_labels = []
-    
-    for raw_seq, c22_seq, labels in dataloader:
-        raw_seq, c22_seq, labels = raw_seq.to(device), c22_seq.to(device), labels.to(device)
-        optimizer.zero_grad()
-        logits = model(raw_seq, c22_seq)
-        loss = criterion(logits.view(-1, 5), labels.view(-1))  # 5 classes
-        
-        # Check for NaN loss
-        if torch.isnan(loss).any():
-            print("Warning: NaN loss detected, skipping batch")
-            continue
-            
-        loss.backward()
-        
-        # Clip gradients to prevent explosion
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # Reduced from 1.0
-        
-        optimizer.step()
-        
-        running_loss += loss.item() * raw_seq.size(0)
-        preds = torch.argmax(logits, dim=-1)
-        all_preds.append(preds.cpu().detach().numpy())
-        all_labels.append(labels.cpu().detach().numpy())
-    
-    # Check if we have any predictions
-    if len(all_preds) == 0:
-        print("Warning: No valid batches in this epoch!")
-        return float('nan'), 0.0
-        
-    epoch_loss = running_loss / len(dataloader.dataset)
-    all_preds = np.concatenate(all_preds).flatten()
-    all_labels = np.concatenate(all_labels).flatten()
-    acc = (all_preds == all_labels).mean()
-    
-    return epoch_loss, acc
+    for raw, c22, labels in loader:
+        # sanitize inputs
+        raw    = torch.nan_to_num(raw,    nan=0.0, posinf=1e5, neginf=-1e5).to(device)
+        c22    = torch.nan_to_num(c22,    nan=0.0, posinf=1e5, neginf=-1e5).to(device)
+        labels = labels.to(device)
 
-def eval_epoch(model, dataloader, criterion, device):
-    """Evaluate model on validation data"""
+        optimizer.zero_grad()
+        logits = model(raw, c22)
+        if not torch.isfinite(logits).all():
+            print("Skipping batch: non-finite logits")
+            continue
+
+        loss = focal_loss(logits, labels)
+        if torch.isnan(loss):
+            print("Skipping batch: NaN loss")
+            continue
+
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+        optimizer.step()
+
+        running_loss += loss.item() * raw.size(0)
+
+    return running_loss / len(loader.dataset)
+
+def eval_epoch(model, loader):
     model.eval()
     running_loss = 0.0
-    all_preds = []
-    all_labels = []
-    all_probs = []
-    
+    all_preds, all_labels = [], []
     with torch.no_grad():
-        for raw_seq, c22_seq, labels in dataloader:
-            raw_seq, c22_seq, labels = raw_seq.to(device), c22_seq.to(device), labels.to(device)
-            logits = model(raw_seq, c22_seq)
-            
-            # Apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1)
-            
-            # Compute loss
-            loss = criterion(logits.view(-1, 5), labels.view(-1))  # 5 classes
-            
-            # Check for NaN loss
-            if torch.isnan(loss).any():
-                print("Warning: NaN loss detected in validation, skipping batch")
+        for raw, c22, labels in loader:
+            raw    = torch.nan_to_num(raw, nan=0.0, posinf=1e5, neginf=-1e5).to(device)
+            c22    = torch.nan_to_num(c22, nan=0.0, posinf=1e5, neginf=-1e5).to(device)
+            labels = labels.to(device)
+
+            logits = model(raw, c22)
+            if not torch.isfinite(logits).all():
                 continue
-                
-            running_loss += loss.item() * raw_seq.size(0)
-            preds = torch.argmax(logits, dim=-1)
-            
+
+            loss = focal_loss(logits, labels)
+            running_loss += loss.item() * raw.size(0)
+
+            preds = logits.argmax(dim=-1)
             all_preds.append(preds.cpu().numpy())
             all_labels.append(labels.cpu().numpy())
-            all_probs.append(probs.cpu().numpy())
-    
-    # Check if we have any predictions
-    if len(all_preds) == 0:
-        print("Warning: No valid batches in validation!")
-        return float('nan'), 0.0, [], [], []
-    
-    epoch_loss = running_loss / len(dataloader.dataset)
-    all_preds = np.concatenate(all_preds).flatten()
-    all_labels = np.concatenate(all_labels).flatten()
-    all_probs = np.concatenate(all_probs).reshape(-1, 5)  # 5 classes
-    acc = (all_preds == all_labels).mean()
-    
-    return epoch_loss, acc, all_preds, all_labels, all_probs
 
-def subject_based_kfold_cv(data_dir, n_folds=5, random_state=42):
-    """Perform k-fold cross-validation with subject-based splitting"""
-    # Get subject mapping
-    true_subject_map = group_by_true_subjects(data_dir)
-    true_subjects = list(true_subject_map.keys())
-    
-    # Shuffle subjects
-    np.random.seed(random_state)
-    np.random.shuffle(true_subjects)
-    
-    # Create folds
-    subject_folds = np.array_split(true_subjects, n_folds)
-    
-    # For each fold
-    results = []
-    for fold_idx in range(n_folds):
-        # Use current fold as test set
-        test_subjects = subject_folds[fold_idx]
-        # Use all other folds as train set
-        train_subjects = [s for i, fold in enumerate(subject_folds) if i != fold_idx for s in fold]
-        
-        # Get recording IDs for train
-def plot_curves(train_losses, test_losses, train_accs, test_accs):
-    """Plot training and validation curves"""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-    
-    ax1.plot(train_losses, label='Train Loss')
-    ax1.plot(test_losses, label='Test Loss')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss')
-    ax1.legend()
-    ax1.set_title('Loss Curves')
-    
-    ax2.plot(train_accs, label='Train Acc')
-    ax2.plot(test_accs, label='Test Acc')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Accuracy')
-    ax2.legend()
-    ax2.set_title('Accuracy Curves')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_DIR, 'plots', 'training_curves.png'))
-    plt.close()
+    if not all_preds:
+        return float('nan'), 0.0, [], []
+    all_preds = np.concatenate(all_preds).ravel()
+    all_labels= np.concatenate(all_labels).ravel()
+    acc = (all_preds==all_labels).mean()
+    return running_loss/len(loader.dataset), acc, all_preds, all_labels
 
-def median_smoothing(predictions, kernel_size=3):
-    """Apply median smoothing to predictions"""
-    return median_filter(predictions, size=kernel_size)
-
-def compute_metrics(y_true, y_pred, class_names=None):
-    """Compute classification metrics"""
-    if class_names is None:
-        class_names = ["W", "N1", "N2", "N3", "REM"]
-        
-    # Overall metrics
-    accuracy = (y_true == y_pred).mean()
-    
-    # Per-class metrics
-    report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True)
-    
-    # Extract F1 scores for each class
-    f1_scores = {}
-    for i, name in enumerate(class_names):
-        f1_scores[name] = report[name]['f1-score']
-    
-    # Overall F1 scores
-    macro_f1 = report['macro avg']['f1-score']
-    weighted_f1 = report['weighted avg']['f1-score']
-    
-    # Confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
-    
-    return {
-        'accuracy': accuracy,
-        'f1_scores': f1_scores,
-        'macro_f1': macro_f1,
-        'weighted_f1': weighted_f1,
-        'classification_report': report,
-        'confusion_matrix': cm
-    }
-
-def plot_confusion_matrix(cm, class_names, title="Confusion Matrix", normalize=False, save_path=None):
-    """Plot confusion matrix"""
-    plt.figure(figsize=(8, 6))
-    
-    if normalize:
-        cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        cm_to_plot = cm_norm
-        fmt = '.2f'
-    else:
-        cm_to_plot = cm
-        fmt = 'd'
-    
-    plt.imshow(cm_to_plot, interpolation='nearest', cmap=plt.cm.Blues)
-    plt.title(title)
-    plt.colorbar()
-    tick_marks = np.arange(len(class_names))
-    plt.xticks(tick_marks, class_names)
-    plt.yticks(tick_marks, class_names)
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    
-    # Add text annotations
-    thresh = cm_to_plot.max() / 2.
-    for i in range(cm_to_plot.shape[0]):
-        for j in range(cm_to_plot.shape[1]):
-            plt.text(j, i, format(cm_to_plot[i, j], fmt),
-                     ha="center", va="center",
-                     color="white" if cm_to_plot[i, j] > thresh else "black")
-    
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path)
-    plt.close()
-
+# -------------------------
+# ==== Main       =========
+# -------------------------
 def main():
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = os.path.join(RESULTS_DIR, f'training_log_{timestamp}.txt')
-    
-    # Set up logging to file
-    def log_print(*args, **kwargs):
-        print(*args, **kwargs)
-        with open(log_file, 'a') as f:
-            print(*args, file=f, **kwargs)
-    
-    log_print(f"Starting hybrid model training at {timestamp}")
-    log_print(f"Using device: {device}")
-    
-    # Implement k-fold cross-validation
-    n_folds = 5
-    log_print(f"\n=== Performing {n_folds}-fold Cross-Validation ===")
-    
-    # Get subject mapping
-    true_subject_map = group_by_true_subjects(PROCESSED_DATA_DIR)
-    true_subjects = list(true_subject_map.keys())
-    
-    # Shuffle subjects
+    torch.autograd.set_detect_anomaly(True)
+
+    # prepare CV splits
+    subj_map = group_by_true_subjects(PROCESSED_DATA_DIR)
+    subjects = list(subj_map.keys())
     np.random.seed(SEED)
-    np.random.shuffle(true_subjects)
-    
-    # Create folds
-    subject_folds = np.array_split(true_subjects, n_folds)
-    
-    # Define class names
-    class_names = ["Wake", "N1", "N2", "N3", "REM"]
-    
-    # Track results across folds
+    np.random.shuffle(subjects)
+    folds = np.array_split(subjects, 5)
+
     fold_results = []
-    
-    # Create directories for each fold's results
-    for fold_idx in range(n_folds):
-        fold_dir = os.path.join(RESULTS_DIR, f"fold_{fold_idx+1}")
-        os.makedirs(fold_dir, exist_ok=True)
-        os.makedirs(os.path.join(fold_dir, "plots"), exist_ok=True)
-        os.makedirs(os.path.join(fold_dir, "models"), exist_ok=True)
-        os.makedirs(os.path.join(fold_dir, "metrics"), exist_ok=True)
-    
-    # For each fold
-    for fold_idx in range(n_folds):
-        fold_dir = os.path.join(RESULTS_DIR, f"fold_{fold_idx+1}")
-        
-        log_print(f"\n\n{'='*50}")
-        log_print(f"=== FOLD {fold_idx+1}/{n_folds} ===")
-        log_print(f"{'='*50}\n")
-        
-        # Use current fold as test set
-        test_subjects = subject_folds[fold_idx]
-        # Use all other folds as train set
-        train_subjects = [s for i, fold in enumerate(subject_folds) if i != fold_idx for s in fold]
-        
-        log_print(f"Train subjects: {len(train_subjects)}")
-        log_print(f"Test subjects: {len(test_subjects)}")
-        
-        # Get recording IDs for train and test
-        train_patients = []
-        for subject in train_subjects:
-            train_patients.extend(true_subject_map[subject])
-        
-        test_patients = []
-        for subject in test_subjects:
-            test_patients.extend(true_subject_map[subject])
-        
-        log_print(f"Train recordings: {len(train_patients)}")
-        log_print(f"Test recordings: {len(test_patients)}")
-        
-        # Save fold split information
-        split_info = {
-            'fold': fold_idx,
-            'train_patients': train_patients,
-            'test_patients': test_patients,
-            'train_subjects': train_subjects,
-            'test_subjects': test_subjects,
-        }
-        
-        with open(os.path.join(fold_dir, 'metrics', 'subject_split.txt'), 'w') as f:
-            f.write(f"Fold {fold_idx+1}/{n_folds}\n\n")
-            f.write("Train subjects:\n")
-            f.write(", ".join(train_subjects))
-            f.write("\n\nTest subjects:\n")
-            f.write(", ".join(test_subjects))
-        
-        # Create hybrid datasets with both raw sequences and Catch22 features
-        log_print("\n=== Loading Datasets ===")
-        train_dataset = HybridSleepDataset(PROCESSED_DATA_DIR, CATCH22_DATA_DIR, patient_ids=train_patients)
-        test_dataset = HybridSleepDataset(PROCESSED_DATA_DIR, CATCH22_DATA_DIR, patient_ids=test_patients)
-        
-        # Create balanced sampler and get class weights
-        train_sampler, class_weights = create_balanced_sampler(train_dataset)
-        
-        # Create data loaders
-        log_print("\n=== Creating DataLoaders ===")
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=BATCH_SIZE,
-            sampler=train_sampler,
-            num_workers=4,
-            pin_memory=True
-        )
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=BATCH_SIZE,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True
-        )
-        
-        log_print(f"Train loader: {len(train_loader)} batches, {len(train_dataset)} samples")
-        log_print(f"Test loader: {len(test_loader)} batches, {len(test_dataset)} samples")
-        
-        # Get C22 feature dimension
-        c22_dim = train_dataset.c22_features.shape[2]
-        log_print(f"Catch22 feature dimension: {c22_dim}")
-        
-        # Initialize model
-        log_print("\n=== Building Model ===")
-        model = HybridSleepTransformer(
-            c22_dim=c22_dim,
-            raw_embedding_dim=128,
-            c22_embedding_dim=64,
-            num_classes=5,
-            num_layers=2,
-            num_heads=4,
-            dropout=0.1,
-            seq_length=SEQ_LENGTH
-        )
-        model.to(device)
-        
-        # Only log model architecture for the first fold
-        if fold_idx == 0:
-            log_print("Model Architecture:")
-            log_print(str(model))
-        
-        # Count parameters
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        log_print(f"Total parameters: {total_params:,}")
-        log_print(f"Trainable parameters: {trainable_params:,}")
-        
-        # Define loss function and optimizer
-        log_print("\n=== Setting Up Training ===")
-        class_weights = class_weights.to(device)
-        criterion = lambda x, y: focal_loss_with_n1_focus(x, y, alpha_general=0.25, alpha_n1=0.75, gamma=2)
-        
-        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)  # Added weight decay
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=3, verbose=True
-        )
-        
-        # Training loop
-        log_print("\n=== Starting Training ===")
-        train_losses, test_losses = [], []
-        train_accs, test_accs = [], []
-        best_val_loss = float('inf')
-        best_model_state = None
-        best_epoch = 0
-        
+    for k in range(5):
+        test_subs  = folds[k]
+        train_subs = [s for i, f in enumerate(folds) if i!=k for s in f]
+        train_ids  = [rid for s in train_subs for rid in subj_map[s]]
+        test_ids   = [rid for s in test_subs  for rid in subj_map[s]]
+
+        train_ds = HybridSleepDataset(PROCESSED_DATA_DIR, CATCH22_DATA_DIR, train_ids)
+        test_ds  = HybridSleepDataset(PROCESSED_DATA_DIR, CATCH22_DATA_DIR, test_ids)
+
+        # weighted sampler
+        labels = train_ds.seq_labels[:,0].numpy()
+        class_counts = np.bincount(labels, minlength=5)
+        class_weights= 1.0 / (class_counts + 1e-6)
+        sample_weights= class_weights[labels]
+        sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
+
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+                                  sampler=sampler, num_workers=4, pin_memory=True)
+        test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE,
+                                  shuffle=False, num_workers=4, pin_memory=True)
+
+        # model & optimizer
+        c22_dim = train_ds.c22_feats.shape[-1]
+        model   = HybridSleepTransformer(c22_dim).to(device)
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                         mode='min', factor=0.5, patience=3, verbose=True)
+
+        best_loss = float('inf')
         for epoch in range(NUM_EPOCHS):
-            # Train
-            train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
-            
-            # Evaluate
-            val_loss, val_acc, val_preds, val_labels, val_probs = eval_epoch(
-                model, test_loader, criterion, device
-            )
-            
-            # Handle NaN losses
-            if np.isnan(val_loss):
-                log_print(f"Warning: NaN validation loss in epoch {epoch+1}. Skipping learning rate update.")
-            else:
-                # Update learning rate
-                scheduler.step(val_loss)
-            
-            # Save metrics
-            train_losses.append(train_loss if not np.isnan(train_loss) else -1)
-            test_losses.append(val_loss if not np.isnan(val_loss) else -1)
-            train_accs.append(train_acc)
-            test_accs.append(val_acc)
-            
-            # Check if this is the best model (if loss is valid)
-            if not np.isnan(val_loss) and val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_model_state = model.state_dict()
-                best_epoch = epoch
-                
-                # Calculate metrics for best model so far
-                metrics = compute_metrics(val_labels, val_preds, class_names)
-                
-                # Save best model
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': val_loss,
-                    'accuracy': val_acc,
-                    'metrics': metrics,
-                }, os.path.join(fold_dir, 'models', 'best_model.pth'))
-                
-                # Save confusion matrix for best model
-                plot_confusion_matrix(
-                    metrics['confusion_matrix'], 
-                    class_names, 
-                    title=f"Fold {fold_idx+1} - Confusion Matrix (Epoch {epoch+1})",
-                    save_path=os.path.join(fold_dir, 'plots', f'confusion_matrix_epoch_{epoch+1}.png')
-                )
-                
-                # Also save normalized version
-                plot_confusion_matrix(
-                    metrics['confusion_matrix'], 
-                    class_names, 
-                    title=f"Fold {fold_idx+1} - Normalized Confusion Matrix (Epoch {epoch+1})",
-                    normalize=True,
-                    save_path=os.path.join(fold_dir, 'plots', f'norm_confusion_matrix_epoch_{epoch+1}.png')
-                )
-            
-            log_print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
-            log_print(f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-            log_print(f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
-            
-            # If we get NaN losses for 3 consecutive epochs, break and restart with a smaller learning rate
-            if epoch >= 2 and np.isnan(train_losses[-1]) and np.isnan(train_losses[-2]) and np.isnan(train_losses[-3]):
-                log_print("Three consecutive NaN losses detected. Reducing learning rate and resetting model.")
-                # Reduce learning rate
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] *= 0.1
-                # Reset model weights
-                model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
-                # Reset best model stats
-                best_val_loss = float('inf')
-                best_model_state = None
-                best_epoch = 0
-                # Clear loss history
-                train_losses, test_losses = [], []
-                train_accs, test_accs = [], []
-                # Start again from epoch 0
-                epoch = -1  # Will be incremented to 0 in the next loop
-                continue
-            
-            # Print detailed metrics every 5 epochs
-            if (epoch + 1) % 5 == 0 or epoch == NUM_EPOCHS - 1:
-                metrics = compute_metrics(val_labels, val_preds, class_names)
-                
-                log_print("\nDetailed Metrics:")
-                log_print(f"Accuracy: {metrics['accuracy']:.4f}")
-                log_print(f"Macro F1: {metrics['macro_f1']:.4f}")
-                log_print(f"Weighted F1: {metrics['weighted_f1']:.4f}")
-                
-                log_print("\nPer-class F1 scores:")
-                for cls, f1 in metrics['f1_scores'].items():
-                    log_print(f"  {cls}: {f1:.4f}")
-                
-                # Also try median smoothing
-                smoothed_preds = median_smoothing(val_preds, kernel_size=5)
-                smoothed_metrics = compute_metrics(val_labels, smoothed_preds, class_names)
-                
-                log_print("\nWith median smoothing (kernel=5):")
-                log_print(f"Accuracy: {smoothed_metrics['accuracy']:.4f}")
-                log_print(f"Macro F1: {smoothed_metrics['macro_f1']:.4f}")
-                
-                log_print("\nPer-class F1 scores (smoothed):")
-                for cls, f1 in smoothed_metrics['f1_scores'].items():
-                    log_print(f"  {cls}: {f1:.4f}")
-        
-        # Skip remaining fold processing if no good model was found
-        if best_model_state is None:
-            log_print(f"Warning: No valid model found for fold {fold_idx+1}. Skipping to next fold.")
-            continue
-            
-        # Save training curves
-        plot_curves(train_losses, test_losses, train_accs, test_accs)
-        plt.savefig(os.path.join(fold_dir, 'plots', 'training_curves.png'))
-        
-        # Final evaluation with best model
-        log_print("\n=== Final Evaluation for Fold ===")
-        log_print(f"Loading best model from epoch {best_epoch+1}")
-        
-        # Load best model
-        model.load_state_dict(best_model_state)
-        
-        # Evaluate on test set
-        test_loss, test_acc, test_preds, test_labels, test_probs = eval_epoch(
-            model, test_loader, criterion, device
-        )
-        
-        # Calculate metrics
-        metrics = compute_metrics(test_labels, test_preds, class_names)
-        
-        # Also apply median smoothing
-        smoothed_preds = median_smoothing(test_preds, kernel_size=5)
-        smoothed_metrics = compute_metrics(test_labels, smoothed_preds, class_names)
-        
-        # Save final confusion matrices
-        plot_confusion_matrix(
-            metrics['confusion_matrix'], 
-            class_names, 
-            title=f"Fold {fold_idx+1} - Final Confusion Matrix",
-            save_path=os.path.join(fold_dir, 'plots', 'final_confusion_matrix.png')
-        )
-        
-        plot_confusion_matrix(
-            metrics['confusion_matrix'], 
-            class_names, 
-            title=f"Fold {fold_idx+1} - Normalized Final Confusion Matrix",
-            normalize=True,
-            save_path=os.path.join(fold_dir, 'plots', 'final_norm_confusion_matrix.png')
-        )
-        
-        plot_confusion_matrix(
-            smoothed_metrics['confusion_matrix'], 
-            class_names, 
-            title=f"Fold {fold_idx+1} - Final Confusion Matrix (Smoothed)",
-            save_path=os.path.join(fold_dir, 'plots', 'final_smoothed_confusion_matrix.png')
-        )
-        
-        # Log detailed final results
-        log_print("\n=== FOLD RESULTS ===")
-        log_print(f"Test Accuracy: {metrics['accuracy']:.4f}")
-        log_print(f"Test Macro F1: {metrics['macro_f1']:.4f}")
-        log_print(f"Test Weighted F1: {metrics['weighted_f1']:.4f}")
-        
-        log_print("\nPer-class F1 scores:")
-        for cls, f1 in metrics['f1_scores'].items():
-            log_print(f"  {cls}: {f1:.4f}")
-        
-        log_print("\nClassification Report:")
-        log_print(classification_report(test_labels, test_preds, target_names=class_names))
-        
-        log_print("\nWith median smoothing (kernel=5):")
-        log_print(f"Smoothed Accuracy: {smoothed_metrics['accuracy']:.4f}")
-        log_print(f"Smoothed Macro F1: {smoothed_metrics['macro_f1']:.4f}")
-        
-        log_print("\nPer-class F1 scores (smoothed):")
-        for cls, f1 in smoothed_metrics['f1_scores'].items():
-            log_print(f"  {cls}: {f1:.4f}")
-        
-        # Save fold results
-        fold_results.append({
-            'fold': fold_idx,
-            'metrics': metrics,
-            'smoothed_metrics': smoothed_metrics,
-            'train_losses': train_losses,
-            'test_losses': test_losses,
-            'train_accs': train_accs,
-            'test_accs': test_accs,
-            'best_epoch': best_epoch,
-            'predictions': test_preds,
-            'smoothed_predictions': smoothed_preds,
-            'true_labels': test_labels,
-            'subject_split': split_info
-        })
-        
-        # Save fold metrics
-        joblib.dump(fold_results[-1], os.path.join(fold_dir, 'metrics', 'fold_results.pkl'))
-    
-    # Skip summary if no folds completed successfully
-    if len(fold_results) == 0:
-        log_print("\n\nNo folds completed successfully. Check model and data!")
-        return
-        
-    # Compute cross-validation summary
-    log_print("\n\n" + "="*50)
-    log_print("=== CROSS-VALIDATION SUMMARY ===")
-    log_print("="*50 + "\n")
-    
-    # Average metrics across folds
-    avg_accuracy = np.mean([r['metrics']['accuracy'] for r in fold_results])
-    avg_macro_f1 = np.mean([r['metrics']['macro_f1'] for r in fold_results])
-    avg_weighted_f1 = np.mean([r['metrics']['weighted_f1'] for r in fold_results])
-    
-    # Standard deviation of metrics
-    std_accuracy = np.std([r['metrics']['accuracy'] for r in fold_results])
-    std_macro_f1 = np.std([r['metrics']['macro_f1'] for r in fold_results])
-    std_weighted_f1 = np.std([r['metrics']['weighted_f1'] for r in fold_results])
-    
-    # Smoothed metrics
-    avg_smoothed_accuracy = np.mean([r['smoothed_metrics']['accuracy'] for r in fold_results])
-    avg_smoothed_macro_f1 = np.mean([r['smoothed_metrics']['macro_f1'] for r in fold_results])
-    std_smoothed_accuracy = np.std([r['smoothed_metrics']['accuracy'] for r in fold_results])
-    std_smoothed_macro_f1 = np.std([r['smoothed_metrics']['macro_f1'] for r in fold_results])
-    
-    log_print("Raw Predictions:")
-    log_print(f"Average Accuracy: {avg_accuracy:.4f} ± {std_accuracy:.4f}")
-    log_print(f"Average Macro F1: {avg_macro_f1:.4f} ± {std_macro_f1:.4f}")
-    log_print(f"Average Weighted F1: {avg_weighted_f1:.4f} ± {std_weighted_f1:.4f}")
-    
-    log_print("\nWith Median Smoothing:")
-    log_print(f"Average Accuracy: {avg_smoothed_accuracy:.4f} ± {std_smoothed_accuracy:.4f}")
-    log_print(f"Average Macro F1: {avg_smoothed_macro_f1:.4f} ± {std_smoothed_macro_f1:.4f}")
-    
-    # Per-class F1 scores across folds
-    log_print("\nPer-class F1 scores (averaged across folds):")
-    for cls in class_names:
-        f1_values = [r['metrics']['f1_scores'][cls] for r in fold_results]
-        avg_f1 = np.mean(f1_values)
-        std_f1 = np.std(f1_values)
-        log_print(f"  {cls}: {avg_f1:.4f} ± {std_f1:.4f}")
-    
-    log_print("\nPer-class F1 scores with smoothing (averaged across folds):")
-    for cls in class_names:
-        f1_values = [r['smoothed_metrics']['f1_scores'][cls] for r in fold_results]
-        avg_f1 = np.mean(f1_values)
-        std_f1 = np.std(f1_values)
-        log_print(f"  {cls}: {avg_f1:.4f} ± {std_f1:.4f}")
-    
-    # Save CV summary
-    cv_summary = {
-        'fold_results': fold_results,
-        'avg_accuracy': avg_accuracy,
-        'std_accuracy': std_accuracy,
-        'avg_macro_f1': avg_macro_f1,
-        'std_macro_f1': std_macro_f1,
-        'avg_weighted_f1': avg_weighted_f1,
-        'std_weighted_f1': std_weighted_f1,
-        'avg_smoothed_accuracy': avg_smoothed_accuracy,
-        'std_smoothed_accuracy': std_smoothed_accuracy,
-        'avg_smoothed_macro_f1': avg_smoothed_macro_f1,
-        'std_smoothed_macro_f1': std_smoothed_macro_f1
-    }
-    
-    joblib.dump(cv_summary, os.path.join(RESULTS_DIR, 'metrics', 'cv_summary.pkl'))
-    
-    # Save a comprehensive text summary
-    with open(os.path.join(RESULTS_DIR, 'metrics', 'cv_summary.txt'), 'w') as f:
-        f.write("Hybrid CNN-Transformer with Catch22 Features - Cross-Validation Results\n")
-        f.write("=================================================================\n\n")
-        f.write(f"Cross-validation completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Number of folds: {n_folds}\n\n")
-        
-        f.write("Average Performance Metrics:\n")
-        f.write(f"- Accuracy: {avg_accuracy:.4f} ± {std_accuracy:.4f}\n")
-        f.write(f"- Macro F1: {avg_macro_f1:.4f} ± {std_macro_f1:.4f}\n")
-        f.write(f"- Weighted F1: {avg_weighted_f1:.4f} ± {std_weighted_f1:.4f}\n\n")
-        
-        f.write("With Median Smoothing:\n")
-        f.write(f"- Accuracy: {avg_smoothed_accuracy:.4f} ± {std_smoothed_accuracy:.4f}\n")
-        f.write(f"- Macro F1: {avg_smoothed_macro_f1:.4f} ± {std_smoothed_macro_f1:.4f}\n\n")
-        
-        f.write("Per-class F1 scores:\n")
-        for cls in class_names:
-            f1_values = [r['metrics']['f1_scores'][cls] for r in fold_results]
-            avg_f1 = np.mean(f1_values)
-            std_f1 = np.std(f1_values)
-            f.write(f"  {cls}: {avg_f1:.4f} ± {std_f1:.4f}\n")
-        
-        f.write("\nPer-class F1 scores with smoothing:\n")
-        for cls in class_names:
-            f1_values = [r['smoothed_metrics']['f1_scores'][cls] for r in fold_results]
-            avg_f1 = np.mean(f1_values)
-            std_f1 = np.std(f1_values)
-            f.write(f"  {cls}: {avg_f1:.4f} ± {std_f1:.4f}\n")
-        
-        f.write("\nResults by fold:\n")
-        for i, fold in enumerate(fold_results):
-            f.write(f"\nFold {i+1}:\n")
-            f.write(f"  Accuracy: {fold['metrics']['accuracy']:.4f}\n")
-            f.write(f"  Macro F1: {fold['metrics']['macro_f1']:.4f}\n")
-            f.write(f"  Best epoch: {fold['best_epoch']+1}\n")
-            f.write(f"  Test subjects: {len(fold['subject_split']['test_subjects'])}\n")
-    
-    log_print("\nCross-validation complete!")
-    log_print(f"Results saved to: {RESULTS_DIR}")
+            tloss = train_epoch(model, train_loader, optimizer)
+            vloss, vacc, vp, vl = eval_epoch(model, test_loader)
+            if np.isfinite(vloss):
+                scheduler.step(vloss)
+            print(f"Fold{k+1} E{epoch+1}/{NUM_EPOCHS} TL={tloss:.4f} VL={vloss:.4f} VA={vacc:.4f}")
+            if np.isfinite(vloss) and vloss < best_loss:
+                best_loss = vloss
+                torch.save(model.state_dict(),
+                           RESULTS_DIR/f"models/best_fold{k+1}.pth")
+
+        # final eval on best model
+        model.load_state_dict(torch.load(RESULTS_DIR/f"models/best_fold{k+1}.pth"))
+        _, vacc, vp, vl = eval_epoch(model, test_loader)
+        print(f"==> Fold{k+1} final accuracy: {vacc:.4f}")
+        print(classification_report(vl, vp, target_names=["W","N1","N2","N3","REM"]))
+        fold_results.append(vacc)
+
+    print("=== CV Summary ===")
+    print("Accuracies:", fold_results)
+    print("Mean  :", np.mean(fold_results))
+    print("Std   :", np.std(fold_results))
 
 if __name__ == "__main__":
     main()
