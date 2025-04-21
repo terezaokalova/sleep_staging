@@ -40,23 +40,34 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Stage 1: N1 vs not 
 class Stage1Dataset(Dataset):
     def __init__(self, raw_dir):
+        # find all of your .npz sequence files
         files = glob.glob(str(raw_dir/"*_sequences.npz"))
         seqs, labs = [], []
+
         for f in files:
             d = np.load(f)
-            seqs.append(d["sequences"])
-            labs.append((d["seq_labels"] == 1).astype(np.int64))
-        # concatenate all windows
-        self.X = torch.from_numpy(
-            np.concatenate(seqs, axis=0)
-        ).float()  # (M, C, T)
+            seq_arr = d["sequences"]    # could be (S, C, T) or (Nseg, S, C, T)
+            lab_arr = d["seq_labels"]   # could be (S,) or (Nseg, S)
 
+            # if it's a 4‑D array, flatten segments × windows → individual windows
+            if seq_arr.ndim == 4:
+                Nseg, S, C, T = seq_arr.shape
+                seq_arr = seq_arr.reshape(Nseg * S, C, T)
+
+            # same for labels
+            if lab_arr.ndim == 2:
+                Nseg, S = lab_arr.shape
+                lab_arr = lab_arr.reshape(Nseg * S)
+
+            seqs.append(seq_arr)
+            # binarize to N1 vs not
+            labs.append((lab_arr == 1).astype(np.int64))
+
+        # now concatenate all windows into one big tensor of shape (M, C, T)
+        self.X = torch.from_numpy(np.concatenate(seqs, axis=0)).float()
+
+        # same for labels → (M,)
         lab_arr = np.concatenate(labs, axis=0)
-        # if for some reason seq_labels came in as (M,window_len), pick center
-        if lab_arr.ndim == 2:
-            center = lab_arr.shape[1] // 2
-            lab_arr = lab_arr[:, center]
-        # now guaranteed (M,)
         self.Y = torch.from_numpy(lab_arr).long()
 
     def __len__(self):
@@ -64,6 +75,33 @@ class Stage1Dataset(Dataset):
 
     def __getitem__(self, i):
         return self.X[i], self.Y[i]
+
+# class Stage1Dataset(Dataset):
+#     def __init__(self, raw_dir):
+#         files = glob.glob(str(raw_dir/"*_sequences.npz"))
+#         seqs, labs = [], []
+#         for f in files:
+#             d = np.load(f)
+#             seqs.append(d["sequences"])
+#             labs.append((d["seq_labels"] == 1).astype(np.int64))
+#         # concatenate all windows
+#         self.X = torch.from_numpy(
+#             np.concatenate(seqs, axis=0)
+#         ).float()  # (M, C, T)
+
+#         lab_arr = np.concatenate(labs, axis=0)
+#         # if for some reason seq_labels came in as (M,window_len), pick center
+#         if lab_arr.ndim == 2:
+#             center = lab_arr.shape[1] // 2
+#             lab_arr = lab_arr[:, center]
+#         # now guaranteed (M,)
+#         self.Y = torch.from_numpy(lab_arr).long()
+
+#     def __len__(self):
+#         return len(self.X)
+
+#     def __getitem__(self, i):
+#         return self.X[i], self.Y[i]
 
 class Stage1Detector(nn.Module):
     def __init__(self):
