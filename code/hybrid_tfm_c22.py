@@ -18,8 +18,11 @@ from sklearn.metrics import classification_report, confusion_matrix
 # -------------------------
 # ==== Initialization ====
 # -------------------------
-HOME = Path.home()
-BASE = HOME / "sleep" / "STAT-4830-GOALZ-project" / "data"
+
+from pathlib import Path
+# Point BASE at the same data folder you used originally:
+BASE = Path("/users/okalova/sleep/STAT-4830-GOALZ-project/data")
+
 PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
 CATCH22_DATA_DIR   = BASE / "c22_processed_sleepedf"
 RESULTS_DIR        = BASE / "hybrid_model_results"
