@@ -231,21 +231,39 @@ class HybridSleepTransformer(nn.Module):
 # -------------------------
 # ==== Loss       =========
 # -------------------------
-def focal_loss(inputs, targets, alpha=0.25, gamma=2.0):
+# -------------------------
+# ==== Loss       =========
+# -------------------------
+def focal_loss(inputs, targets, alpha_general=0.25, alpha_n1=0.75, gamma=2.0):
     """
-    Stable focal loss: uses log_softmax + clamp.
+    Focal Loss that properly picks out the p_t for each true class.
+    - inputs: logits of shape (B, S, C)
+    - targets: ground‑truth indices of shape (B, S)
     """
+    # Flatten to (N, C) and (N,)
     B, S, C = inputs.shape
-    logits = inputs.view(-1, C)
-    tgt    = targets.view(-1)
-    logp   = F.log_softmax(logits, dim=1)
-    p      = logp.exp().clamp(min=1e-7)
-    at     = torch.where(tgt==1,
-                         alpha+0.5,    # boost weight for N1
-                         alpha)
-    ce     = F.nll_loss(logp, tgt, reduction='none')
-    fl     = at * ((1-p)**gamma) * ce
-    return fl.mean()
+    logits = inputs.view(-1, C)      # (N, C)
+    tgt    = targets.view(-1)        # (N,)
+
+    # Log‑softmax + probabilities
+    logp = F.log_softmax(logits, dim=1)         # (N, C)
+    p    = torch.exp(logp).clamp(min=1e-7)      # (N, C)
+
+    # Cross‑entropy per sample
+    ce   = F.nll_loss(logp, tgt, reduction='none')  # (N,)
+
+    # p_t = probability of the true class for each sample
+    pt   = p.gather(1, tgt.unsqueeze(1)).squeeze(1)  # (N,)
+
+    # alpha: boost for N1 class
+    n1_mask = (tgt == 1).float()
+    alpha   = alpha_general * (1 - n1_mask) + alpha_n1 * n1_mask  # (N,)
+
+    # focal term and final loss per sample
+    loss = alpha * ((1 - pt) ** gamma) * ce   # (N,)
+
+    return loss.mean()
+
 
 # -------------------------
 # ==== Training Loop ======
