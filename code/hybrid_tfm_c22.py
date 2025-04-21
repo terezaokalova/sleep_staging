@@ -231,69 +231,102 @@ class HybridSleepDataset(Dataset):
         c22_feature_dim = None
         
         # Process each recording
-        for recording_id in self.recording_ids:
-            # Load raw sequence data
-            raw_path = self.raw_file_map[recording_id]
-            raw_data = np.load(raw_path)
-            sequences = raw_data['sequences']  # shape: (n_sequences, seq_len, channels, samples)
-            seq_labels = raw_data['seq_labels']  # shape: (n_sequences, seq_len)
-            
-            # Load Catch22 features
-            c22_path = self.c22_file_map[recording_id]
-            c22_df = pd.read_csv(c22_path)
-            
-            # Get the true subject ID
-            true_subject = get_true_subject_id(recording_id)
-            
-            # Store start and end indices for this recording
-            start_idx = total_sequences
-            n_sequences = sequences.shape[0]
-            end_idx = start_idx + n_sequences
-            
-            # Store metadata for this recording
-            self.recording_data[recording_id] = {
-                'true_subject': true_subject,
-                'start_idx': start_idx,
-                'end_idx': end_idx,
-                'n_sequences': n_sequences
-            }
-            
-            # Check if sequence length matches number of epochs in C22 features
-            if n_sequences * SEQ_LENGTH != len(c22_df):
-                print(f"Warning: Mismatch in recording {recording_id}!")
-                print(f"  Sequences: {n_sequences} x {SEQ_LENGTH} = {n_sequences * SEQ_LENGTH}")
-                print(f"  C22 epochs: {len(c22_df)}")
-                
-                # Try to find if this is solvable
-                if len(c22_df) >= n_sequences * SEQ_LENGTH:
-                    # If we have extra C22 data, keep only what we need
-                    c22_df = c22_df.iloc[:n_sequences * SEQ_LENGTH]
-                    print(f"  Truncated C22 data to {len(c22_df)} epochs")
-                else:
-                    # Skip this recording if there's a mismatch we can't fix
-                    print(f"  Skipping recording {recording_id} due to data mismatch")
-                    continue
-            
-            # Reshape C22 features to match sequence format
-            c22_features = c22_df.drop(columns=['label']).values
-            if c22_feature_dim is None:
-                c22_feature_dim = c22_features.shape[1]
-                
-            # Reshape to (n_sequences, seq_length, c22_features)
-            c22_features = c22_features.reshape(n_sequences, SEQ_LENGTH, -1)
-            
-            # Append data to lists
-            sequences_list.append(sequences)
-            c22_features_list.append(c22_features)
-            labels_list.append(seq_labels)
-            
-            # Add metadata
-            self.patient_ids.extend([recording_id] * n_sequences)
-            self.true_subject_ids.extend([true_subject] * n_sequences)
-            
-            # Update total count
-            total_sequences += n_sequences
+        successful_recordings = 0
         
+        for recording_id in self.recording_ids:
+            try:
+                # Load raw sequence data
+                raw_path = self.raw_file_map[recording_id]
+                raw_data = np.load(raw_path)
+                sequences = raw_data['sequences']  # shape: (n_sequences, seq_len, channels, samples)
+                seq_labels = raw_data['seq_labels']  # shape: (n_sequences, seq_len)
+                
+                # Load Catch22 features
+                c22_path = self.c22_file_map[recording_id]
+                c22_df = pd.read_csv(c22_path)
+                
+                # Get the true subject ID
+                true_subject = get_true_subject_id(recording_id)
+                
+                # Store start and end indices for this recording
+                start_idx = total_sequences
+                n_sequences = sequences.shape[0]
+                end_idx = start_idx + n_sequences
+                
+                # Store metadata for this recording
+                self.recording_data[recording_id] = {
+                    'true_subject': true_subject,
+                    'start_idx': start_idx,
+                    'end_idx': end_idx,
+                    'n_sequences': n_sequences
+                }
+                
+                # Check if sequence length matches number of epochs in C22 features
+                if n_sequences * SEQ_LENGTH != len(c22_df):
+                    print(f"Warning: Mismatch in recording {recording_id}!")
+                    print(f"  Sequences: {n_sequences} x {SEQ_LENGTH} = {n_sequences * SEQ_LENGTH}")
+                    print(f"  C22 epochs: {len(c22_df)}")
+                    
+                    # Get the feature dimension from the C22 DataFrame
+                    if c22_feature_dim is None:
+                        c22_feature_dim = c22_df.drop(columns=['label']).shape[1]
+                    
+                    # Extract the raw features
+                    c22_raw_features = c22_df.drop(columns=['label']).values
+                    
+                    # Create an array to hold the sequence-aligned features
+                    c22_features = np.zeros((n_sequences, SEQ_LENGTH, c22_feature_dim))
+                    
+                    # Reconstruct sequences from epochs based on sequence creation logic:
+                    # sequences were created with length 20 and stride 10
+                    for seq_idx in range(n_sequences):
+                        # Calculate which epochs were used to create this sequence
+                        # For stride=10: seq 0 uses epochs 0-19, seq 1 uses epochs 10-29, etc.
+                        start_epoch = seq_idx * SEQ_STRIDE
+                        end_epoch = start_epoch + SEQ_LENGTH
+                        
+                        # If we have enough epochs, extract the corresponding features
+                        if end_epoch <= len(c22_df):
+                            epoch_features = c22_raw_features[start_epoch:end_epoch]
+                            c22_features[seq_idx] = epoch_features
+                        else:
+                            # Not enough epochs, use what we have and pad the rest
+                            # (this is a fallback and shouldn't happen much)
+                            available = len(c22_df) - start_epoch
+                            if available > 0:
+                                c22_features[seq_idx, :available] = c22_raw_features[start_epoch:]
+                                # Repeat the last available epoch for padding
+                                for i in range(available, SEQ_LENGTH):
+                                    c22_features[seq_idx, i] = c22_features[seq_idx, available-1]
+                            else:
+                                # No data for this sequence, use data from previous sequence
+                                if seq_idx > 0:
+                                    c22_features[seq_idx] = c22_features[seq_idx-1]
+                                # Otherwise, keep zeros
+                else:
+                    # This shouldn't happen given your data, but included for completeness
+                    c22_features = c22_df.drop(columns=['label']).values.reshape(n_sequences, SEQ_LENGTH, -1)
+                
+                # Append data to lists
+                sequences_list.append(sequences)
+                c22_features_list.append(c22_features)
+                labels_list.append(seq_labels)
+                
+                # Add metadata
+                self.patient_ids.extend([recording_id] * n_sequences)
+                self.true_subject_ids.extend([true_subject] * n_sequences)
+                
+                # Update total count
+                total_sequences += n_sequences
+                successful_recordings += 1
+                
+            except Exception as e:
+                print(f"Error processing recording {recording_id}: {str(e)}")
+                continue
+        
+        if successful_recordings == 0:
+            raise ValueError("No recordings were successfully processed! Check your data.")
+            
         # Concatenate all data
         self.sequences = np.concatenate(sequences_list, axis=0)
         self.c22_features = np.concatenate(c22_features_list, axis=0)
@@ -304,7 +337,7 @@ class HybridSleepDataset(Dataset):
         self.c22_features = torch.from_numpy(self.c22_features).float()
         self.seq_labels = torch.from_numpy(self.seq_labels).long()
         
-        print(f"Loaded {len(self.recording_ids)} recordings with both raw sequences and Catch22 features")
+        print(f"Loaded {successful_recordings} out of {len(self.recording_ids)} recordings")
         print(f"Total sequences: {len(self.sequences)}")
         print(f"Raw sequence shape: {self.sequences.shape}")
         print(f"Catch22 feature shape: {self.c22_features.shape}")
