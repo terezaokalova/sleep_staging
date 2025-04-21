@@ -236,10 +236,12 @@ class EpochEncoder(nn.Module):
 class C22Encoder(nn.Module):
     def __init__(self, input_dim, embedding_dim=64):
         super().__init__()
+        print(f"Initializing C22Encoder with input_dim={input_dim}, embedding_dim={embedding_dim}")
+        
         # Initial normalization
         self.ln0 = nn.LayerNorm(input_dim)
         
-        # Main encoder path
+        # Simplified architecture - just use a standard MLP
         self.fc1 = nn.Linear(input_dim, 256)
         self.ln1 = nn.LayerNorm(256)
         self.fc2 = nn.Linear(256, 128)
@@ -247,50 +249,27 @@ class C22Encoder(nn.Module):
         self.fc3 = nn.Linear(128, embedding_dim)
         self.ln3 = nn.LayerNorm(embedding_dim)
         
-        # Class-specific feature extraction branches
-        self.class_branches = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(input_dim, 64),
-                nn.LayerNorm(64),
-                nn.ReLU(),
-                nn.Dropout(0.1),
-                nn.Linear(64, embedding_dim // 5)  # Each class branch produces embedding_dim // 5 features
-            ) for _ in range(5)  # One branch per sleep class
-        ])
-        
-        # Final projection to combine general and class-specific features
-        # Adjusted to handle correct dimensions: main_features size + total size of class branches
-        total_class_dim = embedding_dim  # 5 branches * (embedding_dim // 5) = embedding_dim
-        self.fc_combine = nn.Linear(embedding_dim + total_class_dim, embedding_dim)
-        self.ln_combine = nn.LayerNorm(embedding_dim)
-        
         # Increased dropout
         self.dropout = nn.Dropout(0.2)
     
     def forward(self, x):
         B, S, D = x.shape
+        print(f"C22Encoder input shape: B={B}, S={S}, D={D}")
+        
         x_flat = x.view(B*S, D)
+        print(f"x_flat shape: {x_flat.shape}")
         
         # Main encoder path
         norm_x = self.ln0(x_flat)
         x1 = self.dropout(F.relu(self.ln1(self.fc1(norm_x))))
         x2 = self.dropout(F.relu(self.ln2(self.fc2(x1))))
-        main_features = self.dropout(F.relu(self.ln3(self.fc3(x2))))
+        x3 = self.dropout(F.relu(self.ln3(self.fc3(x2))))
         
-        # Class-specific branches
-        class_features = []
-        for branch in self.class_branches:
-            class_feat = branch(norm_x)
-            class_features.append(class_feat)
+        print(f"C22Encoder output shape before reshape: {x3.shape}")
+        output = x3.view(B, S, -1)
+        print(f"C22Encoder final output shape: {output.shape}")
         
-        # Concatenate all class-specific features
-        class_features = torch.cat(class_features, dim=1)
-        
-        # Combine main and class-specific features
-        combined = torch.cat([main_features, class_features], dim=1)
-        output = self.dropout(F.relu(self.ln_combine(self.fc_combine(combined))))
-        
-        return output.view(B, S, -1)
+        return output
 
 class HybridSleepTransformer(nn.Module):
     def __init__(self, c22_dim, raw_emb=128, c22_emb=64, num_classes=5,
