@@ -1,53 +1,3 @@
-# #!/usr/bin/env python3
-# import os, sys, glob, argparse, numpy as np
-# import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
-# from torch.utils.data import Dataset, DataLoader
-# import matplotlib.pyplot as plt
-# from scipy.ndimage import median_filter
-# from sklearn.metrics import classification_report, confusion_matrix
-# import pandas as pd
-# import joblib
-# from datetime import datetime
-
-# # Data paths - updated to match server paths
-# PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
-# CATCH22_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/c22_processed_sleepedf'
-# RESULTS_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/hybrid_model_results'
-
-# # Create results directory
-# os.makedirs(RESULTS_DIR, exist_ok=True)
-# os.makedirs(os.path.join(RESULTS_DIR, "plots"), exist_ok=True)
-# os.makedirs(os.path.join(RESULTS_DIR, "models"), exist_ok=True)
-# os.makedirs(os.path.join(RESULTS_DIR, "metrics"), exist_ok=True)
-
-# SEED = 42
-# np.random.seed(SEED)
-# torch.manual_seed(SEED)
-# torch.cuda.manual_seed_all(SEED)
-# torch.backends.cudnn.deterministic = True
-# torch.backends.cudnn.benchmark = False
-
-# # Model parameters
-# BATCH_SIZE = 32
-# NUM_EPOCHS = 35
-# LEARNING_RATE = 1e-4
-# TRAIN_RATIO = 0.8
-# SEQ_LENGTH = 20
-
-# # Check for GPU availability
-# try:
-#     use_gpu = torch.cuda.is_available()
-#     if use_gpu:
-#         device = torch.device("cuda")
-#         print(f"GPU available: {torch.cuda.get_device_name(0)}")
-#     else:
-#         device = torch.device("cpu")
-#         print("No GPU available; using CPU")
-# except Exception as e:
-#     use_gpu = False
-#     device = torch.device("cpu")
-#     print(f"Error checking GPU: {e}. Using CPU.")
-
 #!/usr/bin/env python3
 import os, sys, glob, argparse, numpy as np
 import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
@@ -90,7 +40,7 @@ try:
     # Model parameters
     BATCH_SIZE = 32
     NUM_EPOCHS = 35
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 1e-5  # Reduced from 1e-4 to improve stability
     TRAIN_RATIO = 0.8
     SEQ_LENGTH = 20
     SEQ_STRIDE = 10 
@@ -333,6 +283,15 @@ class HybridSleepDataset(Dataset):
         self.c22_features = np.concatenate(c22_features_list, axis=0)
         self.seq_labels = np.concatenate(labels_list, axis=0)
         
+        # Check for extreme values in the data
+        print(f"Raw sequence stats - min: {self.sequences.min()}, max: {self.sequences.max()}")
+        print(f"C22 feature stats - min: {self.c22_features.min()}, max: {self.c22_features.max()}")
+        
+        # If extreme values are found, apply clipping
+        if np.abs(self.c22_features.max()) > 1e5 or np.abs(self.c22_features.min()) > 1e5:
+            print("Warning: Extreme values found in C22 features, applying clipping")
+            self.c22_features = np.clip(self.c22_features, -1e5, 1e5)
+            
         # Convert to pytorch tensors
         self.sequences = torch.from_numpy(self.sequences).float()
         self.c22_features = torch.from_numpy(self.c22_features).float()
@@ -408,13 +367,18 @@ class EpochEncoder(nn.Module):
     def __init__(self, embedding_dim=128):
         super().__init__()
         self.conv1 = nn.Conv1d(2, 16, kernel_size=5, stride=1, padding=2)
+        self.bn1 = nn.BatchNorm1d(16)  # Added batch normalization
         self.conv2 = nn.Conv1d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm1d(32)  # Added batch normalization
         self.conv3 = nn.Conv1d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.bn3 = nn.BatchNorm1d(64)  # Added batch normalization
         self.pool = nn.MaxPool1d(2)
         
-        # Let's calculate the correct dimension
-        self.calculate_fc_input_dim = None  # Will be set in forward pass
-        self.fc = None  # Will be initialized in first forward pass
+        # Pre-calculate FC input dimension
+        # For sequence length 3000: 3000/2/2/2 = 375
+        # So the dimension is 64 * 375 = 24000
+        self.fc_input_dim = 64 * 375
+        self.fc = nn.Linear(self.fc_input_dim, embedding_dim)
         self.embedding_dim = embedding_dim
         self.dropout = nn.Dropout(0.1)
         
@@ -425,15 +389,9 @@ class EpochEncoder(nn.Module):
         # Process each sequence element independently
         x = x.view(batch_size * seq_len, channels, time_points)
         
-        x = self.pool(torch.relu(self.conv1(x)))
-        x = self.pool(torch.relu(self.conv2(x)))
-        x = self.pool(torch.relu(self.conv3(x)))
-        
-        # Initialize fc layer if not done yet
-        if self.fc is None:
-            self.calculate_fc_input_dim = x.shape[1] * x.shape[2]
-            self.fc = nn.Linear(self.calculate_fc_input_dim, self.embedding_dim).to(x.device)
-            print(f"Initialized fc layer with input dim: {self.calculate_fc_input_dim}")
+        x = self.pool(torch.relu(self.bn1(self.conv1(x))))
+        x = self.pool(torch.relu(self.bn2(self.conv2(x))))
+        x = self.pool(torch.relu(self.bn3(self.conv3(x))))
         
         x = x.view(batch_size * seq_len, -1)  # Flatten
         x = self.dropout(torch.relu(self.fc(x)))
@@ -448,7 +406,9 @@ class C22Encoder(nn.Module):
     """
     def __init__(self, input_dim, embedding_dim=64):
         super().__init__()
+        self.bn_input = nn.BatchNorm1d(input_dim)  # Added batch normalization
         self.fc1 = nn.Linear(input_dim, 128)
+        self.bn1 = nn.BatchNorm1d(128)  # Added batch normalization
         self.fc2 = nn.Linear(128, embedding_dim)
         self.dropout = nn.Dropout(0.1)
         
@@ -459,7 +419,10 @@ class C22Encoder(nn.Module):
         # Process each sequence element independently
         x = x.view(batch_size * seq_len, input_dim)
         
-        x = self.dropout(torch.relu(self.fc1(x)))
+        # Apply BatchNorm to input
+        x = self.bn_input(x)
+        
+        x = self.dropout(torch.relu(self.bn1(self.fc1(x))))
         x = self.dropout(torch.relu(self.fc2(x)))
         
         # Reshape back to sequence form
@@ -480,6 +443,7 @@ class HybridSleepTransformer(nn.Module):
         
         # Fusion layer
         self.fusion = nn.Linear(self.combined_dim, self.combined_dim)
+        self.bn_fusion = nn.BatchNorm1d(self.combined_dim)  # Added batch normalization
         
         # Positional encoding
         self.pos_encoder = nn.Parameter(torch.randn(1, seq_length, self.combined_dim))
@@ -497,6 +461,20 @@ class HybridSleepTransformer(nn.Module):
         # Output layer
         self.fc_out = nn.Linear(self.combined_dim, num_classes)
         
+        # Initialize weights
+        self._init_weights()
+        
+    def _init_weights(self):
+        """Initialize weights for better convergence"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        
     def forward(self, raw_signals, c22_features):
         # raw_signals shape: (batch, seq_len, channels, time_points)
         # c22_features shape: (batch, seq_len, c22_dim)
@@ -509,7 +487,11 @@ class HybridSleepTransformer(nn.Module):
         combined = torch.cat([raw_embeddings, c22_embeddings], dim=2)
         
         # Apply fusion layer
+        batch_size, seq_len, feat_dim = combined.shape
+        combined = combined.view(batch_size * seq_len, feat_dim)
+        combined = self.bn_fusion(combined)
         combined = torch.relu(self.fusion(combined))
+        combined = combined.view(batch_size, seq_len, feat_dim)
         
         # Add positional encoding
         combined = combined + self.pos_encoder
@@ -532,9 +514,12 @@ def focal_loss_with_n1_focus(inputs, targets, alpha_general=0.25, alpha_n1=0.75,
     # Get class dimension
     num_classes = inputs.size(-1)
     
+    # Add small epsilon for numerical stability
+    eps = 1e-7
+    
     # Calculate standard cross entropy (per element)
     ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-    pt = torch.exp(-ce_loss)
+    pt = torch.exp(-ce_loss) + eps  # Add epsilon to prevent zero
     
     # Create a mask for N1 instances (where target == 1)
     n1_mask = (targets == 1).float()
@@ -544,6 +529,12 @@ def focal_loss_with_n1_focus(inputs, targets, alpha_general=0.25, alpha_n1=0.75,
     
     # Calculate the full focal loss with the appropriate alpha per sample
     loss = alphas * ((1 - pt) ** gamma) * ce_loss
+    
+    # Check for NaN values
+    if torch.isnan(loss).any():
+        print("Warning: NaN detected in loss calculation")
+        # Replace NaN values with a small constant
+        loss = torch.where(torch.isnan(loss), torch.tensor(0.1).to(loss.device), loss)
     
     return loss.mean()
 
@@ -559,8 +550,17 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.zero_grad()
         logits = model(raw_seq, c22_seq)
         loss = criterion(logits.view(-1, 5), labels.view(-1))  # 5 classes
+        
+        # Check for NaN loss
+        if torch.isnan(loss).any():
+            print("Warning: NaN loss detected, skipping batch")
+            continue
+            
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Clip gradients to prevent explosion
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # Reduced from 1.0
+        
         optimizer.step()
         
         running_loss += loss.item() * raw_seq.size(0)
@@ -568,6 +568,11 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
         all_preds.append(preds.cpu().detach().numpy())
         all_labels.append(labels.cpu().detach().numpy())
     
+    # Check if we have any predictions
+    if len(all_preds) == 0:
+        print("Warning: No valid batches in this epoch!")
+        return float('nan'), 0.0
+        
     epoch_loss = running_loss / len(dataloader.dataset)
     all_preds = np.concatenate(all_preds).flatten()
     all_labels = np.concatenate(all_labels).flatten()
@@ -587,15 +592,29 @@ def eval_epoch(model, dataloader, criterion, device):
         for raw_seq, c22_seq, labels in dataloader:
             raw_seq, c22_seq, labels = raw_seq.to(device), c22_seq.to(device), labels.to(device)
             logits = model(raw_seq, c22_seq)
+            
+            # Apply softmax to get probabilities
+            probs = F.softmax(logits, dim=-1)
+            
+            # Compute loss
             loss = criterion(logits.view(-1, 5), labels.view(-1))  # 5 classes
             
+            # Check for NaN loss
+            if torch.isnan(loss).any():
+                print("Warning: NaN loss detected in validation, skipping batch")
+                continue
+                
             running_loss += loss.item() * raw_seq.size(0)
-            probs = torch.softmax(logits, dim=-1)
             preds = torch.argmax(logits, dim=-1)
             
             all_preds.append(preds.cpu().numpy())
             all_labels.append(labels.cpu().numpy())
             all_probs.append(probs.cpu().numpy())
+    
+    # Check if we have any predictions
+    if len(all_preds) == 0:
+        print("Warning: No valid batches in validation!")
+        return float('nan'), 0.0, [], [], []
     
     epoch_loss = running_loss / len(dataloader.dataset)
     all_preds = np.concatenate(all_preds).flatten()
@@ -626,26 +645,7 @@ def subject_based_kfold_cv(data_dir, n_folds=5, random_state=42):
         # Use all other folds as train set
         train_subjects = [s for i, fold in enumerate(subject_folds) if i != fold_idx for s in fold]
         
-        # Get recording IDs for train and test
-        train_recordings = []
-        for subject in train_subjects:
-            train_recordings.extend(true_subject_map[subject])
-        
-        test_recordings = []
-        for subject in test_subjects:
-            test_recordings.extend(true_subject_map[subject])
-        
-        fold_data = {
-            'fold': fold_idx,
-            'train_subjects': train_subjects,
-            'test_subjects': test_subjects,
-            'train_recordings': train_recordings,
-            'test_recordings': test_recordings
-        }
-        results.append(fold_data)
-    
-    return results
-
+        # Get recording IDs for train
 def plot_curves(train_losses, test_losses, train_accs, test_accs):
     """Plot training and validation curves"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -886,7 +886,7 @@ def main():
         class_weights = class_weights.to(device)
         criterion = lambda x, y: focal_loss_with_n1_focus(x, y, alpha_general=0.25, alpha_n1=0.75, gamma=2)
         
-        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)  # Added weight decay
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='min', factor=0.5, patience=3, verbose=True
         )
@@ -908,17 +908,21 @@ def main():
                 model, test_loader, criterion, device
             )
             
-            # Update learning rate
-            scheduler.step(val_loss)
+            # Handle NaN losses
+            if np.isnan(val_loss):
+                log_print(f"Warning: NaN validation loss in epoch {epoch+1}. Skipping learning rate update.")
+            else:
+                # Update learning rate
+                scheduler.step(val_loss)
             
             # Save metrics
-            train_losses.append(train_loss)
-            test_losses.append(val_loss)
+            train_losses.append(train_loss if not np.isnan(train_loss) else -1)
+            test_losses.append(val_loss if not np.isnan(val_loss) else -1)
             train_accs.append(train_acc)
             test_accs.append(val_acc)
             
-            # Check if this is the best model
-            if val_loss < best_val_loss:
+            # Check if this is the best model (if loss is valid)
+            if not np.isnan(val_loss) and val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_model_state = model.state_dict()
                 best_epoch = epoch
@@ -957,6 +961,25 @@ def main():
             log_print(f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
             log_print(f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
             
+            # If we get NaN losses for 3 consecutive epochs, break and restart with a smaller learning rate
+            if epoch >= 2 and np.isnan(train_losses[-1]) and np.isnan(train_losses[-2]) and np.isnan(train_losses[-3]):
+                log_print("Three consecutive NaN losses detected. Reducing learning rate and resetting model.")
+                # Reduce learning rate
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] *= 0.1
+                # Reset model weights
+                model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
+                # Reset best model stats
+                best_val_loss = float('inf')
+                best_model_state = None
+                best_epoch = 0
+                # Clear loss history
+                train_losses, test_losses = [], []
+                train_accs, test_accs = [], []
+                # Start again from epoch 0
+                epoch = -1  # Will be incremented to 0 in the next loop
+                continue
+            
             # Print detailed metrics every 5 epochs
             if (epoch + 1) % 5 == 0 or epoch == NUM_EPOCHS - 1:
                 metrics = compute_metrics(val_labels, val_preds, class_names)
@@ -982,6 +1005,11 @@ def main():
                 for cls, f1 in smoothed_metrics['f1_scores'].items():
                     log_print(f"  {cls}: {f1:.4f}")
         
+        # Skip remaining fold processing if no good model was found
+        if best_model_state is None:
+            log_print(f"Warning: No valid model found for fold {fold_idx+1}. Skipping to next fold.")
+            continue
+            
         # Save training curves
         plot_curves(train_losses, test_losses, train_accs, test_accs)
         plt.savefig(os.path.join(fold_dir, 'plots', 'training_curves.png'))
@@ -1068,6 +1096,11 @@ def main():
         # Save fold metrics
         joblib.dump(fold_results[-1], os.path.join(fold_dir, 'metrics', 'fold_results.pkl'))
     
+    # Skip summary if no folds completed successfully
+    if len(fold_results) == 0:
+        log_print("\n\nNo folds completed successfully. Check model and data!")
+        return
+        
     # Compute cross-validation summary
     log_print("\n\n" + "="*50)
     log_print("=== CROSS-VALIDATION SUMMARY ===")
