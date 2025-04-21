@@ -93,6 +93,7 @@ try:
     LEARNING_RATE = 1e-4
     TRAIN_RATIO = 0.8
     SEQ_LENGTH = 20
+    SEQ_STRIDE = 10 
     print("Model parameters initialized")
     
     # Check for GPU availability
