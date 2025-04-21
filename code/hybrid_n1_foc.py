@@ -184,10 +184,13 @@ class EpochEncoder(nn.Module):
             nn.Sigmoid()
         )
         
-        # Calculate output size after convolutions and pooling
-        self.fc = nn.Linear(128*187, embedding_dim)  # 375/2^3 = ~47, multiplied by channel count
+        # Use adaptive pooling to handle any input size
+        self.adaptive_pool = nn.AdaptiveAvgPool1d(48)
+        
+        # Fixed output size after adaptive pooling
+        self.fc = nn.Linear(128 * 48, embedding_dim)
         self.ln = nn.LayerNorm(embedding_dim)
-        self.dropout = nn.Dropout(0.2)  # Increased dropout for better regularization
+        self.dropout = nn.Dropout(0.2)
     
     def forward(self, x):
         B, S, C, T = x.shape
@@ -219,6 +222,9 @@ class EpochEncoder(nn.Module):
         # Apply channel attention
         attn = self.channel_attn(x)
         x = x * attn
+        
+        # Use adaptive pooling to get fixed output size
+        x = self.adaptive_pool(x)
         
         # Flatten and project
         x = x.view(B*S, -1)
