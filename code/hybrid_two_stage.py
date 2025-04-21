@@ -65,8 +65,6 @@ class Stage1Dataset(Dataset):
     def __getitem__(self, i):
         return self.X[i], self.Y[i]
 
-# --- replace these three in your file ---
-
 class Stage1Detector(nn.Module):
     def __init__(self):
         super().__init__()
@@ -76,13 +74,12 @@ class Stage1Detector(nn.Module):
             nn.Conv1d(32,64,3,padding=1), nn.ReLU(), nn.AdaptiveAvgPool1d(1)
         )
         self.fc = nn.Linear(64,2)
+
     def forward(self, x):
-        # x: (B, S, C, T)
-        B,S,C,T = x.shape
-        x = x.view(B*S, C, T)              # (B*S, C, T)
-        h = self.conv(x).squeeze(-1)       # (B*S, 64)
-        h = self.fc(h)                     # (B*S, 2)
-        return h.view(B, S, 2)             # (B, S, 2)
+        # now x is (batch, channels, time)
+        h = self.conv(x).squeeze(-1)   # -> (batch, 64)
+        return self.fc(h)              # -> (batch, 2)
+
 
 def train_stage1(detector, loader, opt):
     detector.train()
