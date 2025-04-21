@@ -1,3 +1,53 @@
+# #!/usr/bin/env python3
+# import os, sys, glob, argparse, numpy as np
+# import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
+# from torch.utils.data import Dataset, DataLoader
+# import matplotlib.pyplot as plt
+# from scipy.ndimage import median_filter
+# from sklearn.metrics import classification_report, confusion_matrix
+# import pandas as pd
+# import joblib
+# from datetime import datetime
+
+# # Data paths - updated to match server paths
+# PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
+# CATCH22_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/c22_processed_sleepedf'
+# RESULTS_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/hybrid_model_results'
+
+# # Create results directory
+# os.makedirs(RESULTS_DIR, exist_ok=True)
+# os.makedirs(os.path.join(RESULTS_DIR, "plots"), exist_ok=True)
+# os.makedirs(os.path.join(RESULTS_DIR, "models"), exist_ok=True)
+# os.makedirs(os.path.join(RESULTS_DIR, "metrics"), exist_ok=True)
+
+# SEED = 42
+# np.random.seed(SEED)
+# torch.manual_seed(SEED)
+# torch.cuda.manual_seed_all(SEED)
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
+
+# # Model parameters
+# BATCH_SIZE = 32
+# NUM_EPOCHS = 35
+# LEARNING_RATE = 1e-4
+# TRAIN_RATIO = 0.8
+# SEQ_LENGTH = 20
+
+# # Check for GPU availability
+# try:
+#     use_gpu = torch.cuda.is_available()
+#     if use_gpu:
+#         device = torch.device("cuda")
+#         print(f"GPU available: {torch.cuda.get_device_name(0)}")
+#     else:
+#         device = torch.device("cpu")
+#         print("No GPU available; using CPU")
+# except Exception as e:
+#     use_gpu = False
+#     device = torch.device("cpu")
+#     print(f"Error checking GPU: {e}. Using CPU.")
+
 #!/usr/bin/env python3
 import os, sys, glob, argparse, numpy as np
 import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
@@ -7,47 +57,78 @@ from scipy.ndimage import median_filter
 from sklearn.metrics import classification_report, confusion_matrix
 import pandas as pd
 import joblib
+import traceback
 from datetime import datetime
 
-# Data paths - updated to match server paths
-PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
-CATCH22_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/c22_processed_sleepedf'
-RESULTS_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/hybrid_model_results'
+# Set up immediate debugging
+print("Starting script execution...")
 
-# Create results directory
-os.makedirs(RESULTS_DIR, exist_ok=True)
-os.makedirs(os.path.join(RESULTS_DIR, "plots"), exist_ok=True)
-os.makedirs(os.path.join(RESULTS_DIR, "models"), exist_ok=True)
-os.makedirs(os.path.join(RESULTS_DIR, "metrics"), exist_ok=True)
-
-# Set random seed for reproducibility
-SEED = 42
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
-# Model parameters
-BATCH_SIZE = 32
-NUM_EPOCHS = 35
-LEARNING_RATE = 1e-4
-TRAIN_RATIO = 0.8
-SEQ_LENGTH = 20
-
-# Check for GPU availability
 try:
-    use_gpu = torch.cuda.is_available()
-    if use_gpu:
-        device = torch.device("cuda")
-        print(f"GPU available: {torch.cuda.get_device_name(0)}")
-    else:
+    # Data paths - updated to match server paths
+    PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
+    CATCH22_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/c22_processed_sleepedf'
+    RESULTS_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/hybrid_model_results'
+    
+    print(f"Checking directory access:")
+    print(f"  PROCESSED_DATA_DIR exists: {os.path.exists(PROCESSED_DATA_DIR)}")
+    print(f"  CATCH22_DATA_DIR exists: {os.path.exists(CATCH22_DATA_DIR)}")
+    
+    # Create results directory
+    print("Creating output directories...")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(os.path.join(RESULTS_DIR, "plots"), exist_ok=True)
+    os.makedirs(os.path.join(RESULTS_DIR, "models"), exist_ok=True)
+    os.makedirs(os.path.join(RESULTS_DIR, "metrics"), exist_ok=True)
+    print("Output directories created successfully")
+    
+    # Set random seed for reproducibility
+    SEED = 42
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print("Random seeds set")
+    
+    # Model parameters
+    BATCH_SIZE = 32
+    NUM_EPOCHS = 35
+    LEARNING_RATE = 1e-4
+    TRAIN_RATIO = 0.8
+    SEQ_LENGTH = 20
+    print("Model parameters initialized")
+    
+    # Check for GPU availability
+    try:
+        use_gpu = torch.cuda.is_available()
+        if use_gpu:
+            device = torch.device("cuda")
+            print(f"GPU available: {torch.cuda.get_device_name(0)}")
+            # Add GPU memory check
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
+            print(f"GPU memory: {gpu_memory:.2f} GB")
+        else:
+            device = torch.device("cpu")
+            print("No GPU available; using CPU")
+    except Exception as e:
+        use_gpu = False
         device = torch.device("cpu")
-        print("No GPU available; using CPU")
+        print(f"Error checking GPU: {e}. Using CPU.")
+    
+    # Verify data directories have files
+    print("Checking for data files...")
+    raw_files = glob.glob(os.path.join(PROCESSED_DATA_DIR, '*_sequences.npz'))
+    c22_files = glob.glob(os.path.join(CATCH22_DATA_DIR, '*_c22.csv'))
+    print(f"Found {len(raw_files)} raw sequence files")
+    print(f"Found {len(c22_files)} Catch22 feature files")
+    
+    if len(raw_files) == 0 or len(c22_files) == 0:
+        raise ValueError("No data files found in specified directories!")
+    
 except Exception as e:
-    use_gpu = False
-    device = torch.device("cpu")
-    print(f"Error checking GPU: {e}. Using CPU.")
+    print("ERROR DURING INITIALIZATION:")
+    print(traceback.format_exc())
+    sys.exit(1)
 
 def get_true_subject_id(filename):
     """Extract true subject ID ignoring the night number"""
