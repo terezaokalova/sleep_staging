@@ -239,7 +239,7 @@ class C22Encoder(nn.Module):
         # Initial normalization
         self.ln0 = nn.LayerNorm(input_dim)
         
-        # Deeper network for better feature extraction
+        # Main encoder path
         self.fc1 = nn.Linear(input_dim, 256)
         self.ln1 = nn.LayerNorm(256)
         self.fc2 = nn.Linear(256, 128)
@@ -254,12 +254,14 @@ class C22Encoder(nn.Module):
                 nn.LayerNorm(64),
                 nn.ReLU(),
                 nn.Dropout(0.1),
-                nn.Linear(64, embedding_dim // 5)
+                nn.Linear(64, embedding_dim // 5)  # Each class branch produces embedding_dim // 5 features
             ) for _ in range(5)  # One branch per sleep class
         ])
         
         # Final projection to combine general and class-specific features
-        self.fc_combine = nn.Linear(embedding_dim + embedding_dim, embedding_dim)
+        # Adjusted to handle correct dimensions: main_features size + total size of class branches
+        total_class_dim = embedding_dim  # 5 branches * (embedding_dim // 5) = embedding_dim
+        self.fc_combine = nn.Linear(embedding_dim + total_class_dim, embedding_dim)
         self.ln_combine = nn.LayerNorm(embedding_dim)
         
         # Increased dropout
