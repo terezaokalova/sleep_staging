@@ -60,9 +60,6 @@ import joblib
 import traceback
 from datetime import datetime
 
-# Set up immediate debugging
-print("Starting script execution...")
-
 try:
     # Data paths - updated to match server paths
     PROCESSED_DATA_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
@@ -1139,3 +1136,6 @@ def main():
     
     log_print("\nCross-validation complete!")
     log_print(f"Results saved to: {RESULTS_DIR}")
+
+if __name__ == "__main__":
+    main()
