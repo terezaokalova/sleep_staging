@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 import torch.optim as optim
+from pathlib import Path
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from hybrid_two_stage import (
@@ -15,7 +16,7 @@ from hybrid_two_stage import (
 )
 
 # point this at your real processed data directory:
-RAW_DIR = "/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf"
+RAW_DIR = Path("/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf")
 
 if __name__ == "__main__":
     # load just a handful of windows so it runs in seconds
@@ -41,4 +42,4 @@ if __name__ == "__main__":
     loss = train_stage1(model, loader, opt)
     acc  = eval_stage1(model, loader)
 
-    print(f"🔍 Smoke‐test →  loss={loss:.4f},  acc={acc:.4f}")
+    print(f"test →  loss={loss:.4f},  acc={acc:.4f}")
