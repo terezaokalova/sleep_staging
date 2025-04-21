@@ -7,3 +7,10 @@ results/models/*.pkl
 # ignore RandomForest metric & plot files
 /results/metrics/RandomForest*
 /results/plots/RandomForest*
+
+#–– ignore everything
+*
+# but keep Python files and these two metadata files
+!*.py
+!/.gitignore
+!/.gitattributes

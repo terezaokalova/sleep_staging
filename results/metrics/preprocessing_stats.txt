@@ -1,8 +1,0 @@
-Data Preprocessing Statistics
-============================
-
-NaN values in training set: 608
-NaN values in validation set: 0
-NaN values in test set: 1026
-
-NaN handling strategy: Using SimpleImputer with median strategy

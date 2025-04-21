@@ -1,9 +1,0 @@
-ROC AUC values for HistGradientBoosting:
-
-Wake: 0.9845
-N1: 0.9071
-N2: 0.9616
-N3: 0.9889
-REM: 0.9097
-
-Macro-average AUC: 0.9504
