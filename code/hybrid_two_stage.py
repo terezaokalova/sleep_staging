@@ -45,11 +45,25 @@ class Stage1Dataset(Dataset):
         for f in files:
             d = np.load(f)
             seqs.append(d["sequences"])
-            labs.append((d["seq_labels"]==1).astype(np.int64))
-        self.X = torch.from_numpy(np.concatenate(seqs,0)).float()  # (M, C, T)
-        self.Y = torch.from_numpy(np.concatenate(labs,0)).long()  # (M,)
-    def __len__(self): return len(self.X)
-    def __getitem__(self,i): return self.X[i], self.Y[i]
+            labs.append((d["seq_labels"] == 1).astype(np.int64))
+        # concatenate all windows
+        self.X = torch.from_numpy(
+            np.concatenate(seqs, axis=0)
+        ).float()  # (M, C, T)
+
+        lab_arr = np.concatenate(labs, axis=0)
+        # if for some reason seq_labels came in as (M,window_len), pick center
+        if lab_arr.ndim == 2:
+            center = lab_arr.shape[1] // 2
+            lab_arr = lab_arr[:, center]
+        # now guaranteed (M,)
+        self.Y = torch.from_numpy(lab_arr).long()
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, i):
+        return self.X[i], self.Y[i]
 
 class Stage1Detector(nn.Module):
     def __init__(self):
@@ -299,16 +313,37 @@ def main():
         ds2_tr = HybridSleepDataset(PROCESSED_DIR,CATCH22_DIR,train_ids)
         ds2_te = HybridSleepDataset(PROCESSED_DIR,CATCH22_DIR,test_ids)
         # sampler oversample segments containing any N1
-        seg_has_n1 = (ds2_tr.labels==1).any(dim=1).numpy()
-        n1_cnt = seg_has_n1.sum(); n0_cnt = len(ds2_tr)-n1_cnt
-        w_n1 = (n0_cnt/n1_cnt)*(DESIRED_N1/(1-DESIRED_N1))
+        # seg_has_n1 = (ds2_tr.labels==1).any(dim=1).numpy()
+        # n1_cnt = seg_has_n1.sum(); n0_cnt = len(ds2_tr)-n1_cnt
+        # w_n1 = (n0_cnt/n1_cnt)*(DESIRED_N1/(1-DESIRED_N1))
+        # sw2 = np.where(seg_has_n1, w_n1, 1.0)
+        # loader2_tr = DataLoader(ds2_tr, BATCH_SIZE,
+        #                         sampler=WeightedRandomSampler(sw2,len(sw2),True),
+        #                         num_workers=4, pin_memory=True)
+        # loader2_te = DataLoader(ds2_te, BATCH_SIZE, shuffle=False,
+        #                         num_workers=4, pin_memory=True)
+        # sampler oversample _windows_ containing N1
+        # (ds2_tr.labels is already a 1D tensor of length num_windows)
+        seg_has_n1 = (ds2_tr.labels == 1).numpy()
+        n1_cnt = seg_has_n1.sum()
+        n0_cnt = len(ds2_tr) - n1_cnt
+        w_n1 = (n0_cnt / n1_cnt) * (DESIRED_N1 / (1 - DESIRED_N1))
         sw2 = np.where(seg_has_n1, w_n1, 1.0)
-        loader2_tr = DataLoader(ds2_tr, BATCH_SIZE,
-                                sampler=WeightedRandomSampler(sw2,len(sw2),True),
-                                num_workers=4, pin_memory=True)
-        loader2_te = DataLoader(ds2_te, BATCH_SIZE, shuffle=False,
-                                num_workers=4, pin_memory=True)
 
+        loader2_tr = DataLoader(
+            ds2_tr,
+            BATCH_SIZE,
+            sampler=WeightedRandomSampler(sw2, len(sw2), True),
+            num_workers=4,
+            pin_memory=True
+        )
+        loader2_te = DataLoader(
+            ds2_te,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True
+        )
         model = HybridSleepTransformer(ds2_tr.c22.size(-1)).to(device)
         opt2 = optim.AdamW(model.parameters(), lr=LR2, weight_decay=1e-4)
         for ep in range(NUM_EPOCHS):
