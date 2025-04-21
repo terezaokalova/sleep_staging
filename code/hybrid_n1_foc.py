@@ -254,7 +254,7 @@ class EpochEncoder(nn.Module):
 class C22Encoder(nn.Module):
     def __init__(self, input_dim, embedding_dim=64):
         super().__init__()
-        print(f"Initializing C22Encoder with input_dim={input_dim}, embedding_dim={embedding_dim}")
+        # print(f"Initializing C22Encoder with input_dim={input_dim}, embedding_dim={embedding_dim}")
         
         # Initial normalization
         self.ln0 = nn.LayerNorm(input_dim)
@@ -272,10 +272,10 @@ class C22Encoder(nn.Module):
     
     def forward(self, x):
         B, S, D = x.shape
-        print(f"C22Encoder input shape: B={B}, S={S}, D={D}")
+        # print(f"C22Encoder input shape: B={B}, S={S}, D={D}")
         
         x_flat = x.view(B*S, D)
-        print(f"x_flat shape: {x_flat.shape}")
+        # print(f"x_flat shape: {x_flat.shape}")
         
         # Main encoder path
         norm_x = self.ln0(x_flat)
@@ -283,9 +283,9 @@ class C22Encoder(nn.Module):
         x2 = self.dropout(F.relu(self.ln2(self.fc2(x1))))
         x3 = self.dropout(F.relu(self.ln3(self.fc3(x2))))
         
-        print(f"C22Encoder output shape before reshape: {x3.shape}")
+        # print(f"C22Encoder output shape before reshape: {x3.shape}")
         output = x3.view(B, S, -1)
-        print(f"C22Encoder final output shape: {output.shape}")
+        # print(f"C22Encoder final output shape: {output.shape}")
         
         return output
 
@@ -293,7 +293,7 @@ class HybridSleepTransformer(nn.Module):
     def __init__(self, c22_dim, raw_emb=128, c22_emb=64, num_classes=5,
                  num_layers=3, num_heads=8, dropout=0.2, seq_length=30):
         super().__init__()
-        print(f"Initializing HybridSleepTransformer with seq_length={seq_length}")
+        # print(f"Initializing HybridSleepTransformer with seq_length={seq_length}")
         
         self.seq_length = seq_length  # Store for reference
         self.epoch_enc = EpochEncoder(raw_emb)
@@ -372,83 +372,83 @@ class HybridSleepTransformer(nn.Module):
                 if m.bias is not None: nn.init.constant_(m.bias, 0)
 
     def forward(self, raw, c22):
-        print(f"HybridSleepTransformer input shapes: raw={raw.shape}, c22={c22.shape}")
+        # print(f"HybridSleepTransformer input shapes: raw={raw.shape}, c22={c22.shape}")
         
         # Encode raw signals and Catch22 features
         r = self.epoch_enc(raw)
-        print(f"EpochEncoder output shape: {r.shape}")
+        # print(f"EpochEncoder output shape: {r.shape}")
         
         c = self.c22_enc(c22)
-        print(f"C22Encoder output shape: {c.shape}")
+        # print(f"C22Encoder output shape: {c.shape}")
         
         # Ensure sequence dimensions match by truncating or padding
         B, Sr, D_r = r.shape
         B, Sc, D_c = c.shape
         
         if Sr != Sc:
-            print(f"WARNING: Sequence length mismatch! Sr={Sr}, Sc={Sc}")
+            # print(f"WARNING: Sequence length mismatch! Sr={Sr}, Sc={Sc}")
             # Use the minimum sequence length to ensure compatibility
             S_min = min(Sr, Sc)
             r = r[:, :S_min, :]
             c = c[:, :S_min, :]
-            print(f"After adjustment: r={r.shape}, c={c.shape}")
+            # print(f"After adjustment: r={r.shape}, c={c.shape}")
         
         # Get auxiliary predictions for intermediate supervision
         aux_raw_preds = self.aux_raw_classifier(r)
         aux_c22_preds = self.aux_c22_classifier(c)
-        print(f"Auxiliary prediction shapes: raw={aux_raw_preds.shape}, c22={aux_c22_preds.shape}")
+        # print(f"Auxiliary prediction shapes: raw={aux_raw_preds.shape}, c22={aux_c22_preds.shape}")
         
         # Combine features
         x = torch.cat([r, c], dim=2)
-        print(f"Combined features shape: {x.shape}")
+        # print(f"Combined features shape: {x.shape}")
         
         B, S, D = x.shape
         
         # Apply fusion
         x_flat = x.view(B*S, D)
-        print(f"Flattened combined shape: {x_flat.shape}")
+        # print(f"Flattened combined shape: {x_flat.shape}")
         
         x_fused = self.fusion(x_flat)
         x_fused = F.relu(self.ln_fusion(x_fused))
         x = x_fused.view(B, S, D)
-        print(f"Fused features shape: {x.shape}")
+        # print(f"Fused features shape: {x.shape}")
         
         # Add positional encoding, ensuring dimensions match
         x = x + self.pos_encoder[:, :S, :]
-        print(f"After positional encoding: {x.shape}")
+        # print(f"After positional encoding: {x.shape}")
         
         # Append class tokens to sequence
         class_tokens = self.class_tokens.expand(B, -1, -1)
-        print(f"Class tokens shape: {class_tokens.shape}")
+        # print(f"Class tokens shape: {class_tokens.shape}")
         
         x_with_class = torch.cat([x, class_tokens], dim=1)
-        print(f"With class tokens shape: {x_with_class.shape}")
+        # print(f"With class tokens shape: {x_with_class.shape}")
         
         # Apply transformer
         transformer_out = self.transformer(x_with_class)
-        print(f"Transformer output shape: {transformer_out.shape}")
+        # print(f"Transformer output shape: {transformer_out.shape}")
         
         # Split sequence and class tokens
         seq_out = transformer_out[:, :S, :]
         class_out = transformer_out[:, S:, :]
-        print(f"Split shapes - seq_out: {seq_out.shape}, class_out: {class_out.shape}")
+        # print(f"Split shapes - seq_out: {seq_out.shape}, class_out: {class_out.shape}")
         
         # Apply specialized N1 detector
         n1_features = self.n1_detector(seq_out)
-        print(f"N1 features shape: {n1_features.shape}")
+        # print(f"N1 features shape: {n1_features.shape}")
         
         n1_lstm_out, _ = self.n1_lstm(n1_features)
-        print(f"N1 LSTM output shape: {n1_lstm_out.shape}")
+        # print(f"N1 LSTM output shape: {n1_lstm_out.shape}")
         
         n1_attn_out, _ = self.n1_attn(n1_lstm_out, n1_lstm_out, n1_lstm_out)
-        print(f"N1 attention output shape: {n1_attn_out.shape}")
+        # print(f"N1 attention output shape: {n1_attn_out.shape}")
         
         n1_score = self.n1_output(n1_attn_out)
-        print(f"N1 score shape: {n1_score.shape}")
+        # print(f"N1 score shape: {n1_score.shape}")
         
         # Apply shared dense layer
         shared_features = self.dropout(F.relu(self.ln_shared(self.fc_shared(seq_out))))
-        print(f"Shared features shape: {shared_features.shape}")
+        # print(f"Shared features shape: {shared_features.shape}")
         
         # Apply class-specific heads
         class_outputs = []
@@ -459,11 +459,11 @@ class HybridSleepTransformer(nn.Module):
             else:
                 class_score = fc(shared_features)
             class_outputs.append(class_score)
-            print(f"Class {i} output shape: {class_score.shape}")
+            # print(f"Class {i} output shape: {class_score.shape}")
         
         # Concatenate outputs
         output = torch.cat(class_outputs, dim=2)
-        print(f"Final output shape: {output.shape}")
+        # print(f"Final output shape: {output.shape}")
         
         if self.training:
             return output, aux_raw_preds, aux_c22_preds
