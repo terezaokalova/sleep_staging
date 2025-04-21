@@ -8,15 +8,49 @@ from joblib import Parallel, delayed
 import time
 import matplotlib.pyplot as plt
 
-# Configuration - using the same paths that worked for catch22
-BASE_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0'
-PROCESSED_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/processed_sleepedf'
-OUTPUT_DIR = '/users/okalova/sleep/STAT-4830-GOALZ-project/data/psd_features_sleepedf'
+from pathlib import Path
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 1) Root of all your project data
+DATA_ROOT = Path.home() / 'spring_2025' / 'STAT_4830' / 'STAT-4830-GOALZ-project' / 'data'
+
+# 2) Raw EDF files live here:
+BASE_DIR = DATA_ROOT / 'sleep-edf-database-expanded-1.0.0'
+
+# 3) Your preprocessing must have written epoch .npz files here:
+PROCESSED_DIR = DATA_ROOT / 'processed_sleepedf'
+
+# 4) We'll dump PSD features & plots here:
+OUTPUT_DIR = DATA_ROOT / 'psd_features_sleepedf'
+
+# 5) Sanity‐check that the input directories actually exist:
+if not BASE_DIR.exists():
+    raise FileNotFoundError(f"Raw EDF folder not found: {BASE_DIR}")
+if not PROCESSED_DIR.exists():
+    raise FileNotFoundError(f"Preprocessed epochs folder not found: {PROCESSED_DIR}")
+
+# 6) Create the output directories
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+(OUTPUT_DIR / 'plots').mkdir(exist_ok=True)
+# ────────────────────────────────────────────────────────────────────────────────
+
+# Sampling rate for Sleep-EDF is 100Hz
+FS = 100
+
+# sanity checks
+if not BASE_DIR.exists():
+    raise FileNotFoundError(f"Raw EDF folder not found: {BASE_DIR}")
+if not PROCESSED_DIR.exists():
+    raise FileNotFoundError(f"Preprocessed epochs folder not found: {PROCESSED_DIR}")
+
+# 5) create output dirs
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+(OUTPUT_DIR / 'plots').mkdir(exist_ok=True)
+
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, 'plots'), exist_ok=True)
 
-# Sampling rate for Sleep-EDF is 100Hz
-FS = 100  
 
 # Define frequency bands of interest
 FREQ_BANDS = {
@@ -37,11 +71,11 @@ def get_true_subject_id(filename):
     """Extract true subject ID ignoring the night number."""
     basename = os.path.basename(filename).split('_')[0]
     if basename.startswith('SC4'):
-        return basename[:5]  # SC4xx
+        return basename[:5]  # SC4xx - first 5 chars for Sleep Cassette
     elif basename.startswith('ST7'):
-        return basename[:5]  # ST7xx
+        return basename[:5]  # ST7xx - first 5 chars for Sleep Telemetry
     else:
-        return basename[:6]
+        return basename[:6]  # Fallback to original logic
 
 def apply_bandpass_filter(data, lowcut=0.5, highcut=45, fs=100, order=5):
     """Apply bandpass filter to the data."""
