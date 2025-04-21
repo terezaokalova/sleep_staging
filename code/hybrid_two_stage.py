@@ -321,7 +321,8 @@ def main():
     np.random.shuffle(subs)
     folds = np.array_split(subs, 5)
 
-    crf = CRF(N_CLASSES, batch_first=True)
+    # crf = CRF(N_CLASSES, batch_first=True)
+    crf = CRF(N_CLASSES, batch_first=True).to(device)
     for k in range(2):  # or range(5)
         # which subjects go in train vs test
         test_subs  = folds[k].tolist()
@@ -345,7 +346,9 @@ def main():
         #                         num_workers=4, pin_memory=True)
         # sampler oversample _windows_ containing N1
         # (ds2_tr.labels is already a 1D tensor of length num_windows)
-        seg_has_n1 = (ds2_tr.labels == 1).numpy()
+        # prev
+        # seg_has_n1 = (ds2_tr.labels == 1).numpy()
+        seg_has_n1 = (ds2_tr.labels == 1).any(dim=1).cpu().numpy()
         n1_cnt = seg_has_n1.sum()
         n0_cnt = len(ds2_tr) - n1_cnt
         w_n1 = (n0_cnt / n1_cnt) * (DESIRED_N1 / (1 - DESIRED_N1))
