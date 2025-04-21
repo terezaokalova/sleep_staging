@@ -65,6 +65,8 @@ class Stage1Dataset(Dataset):
     def __getitem__(self, i):
         return self.X[i], self.Y[i]
 
+# --- replace these three in your file ---
+
 class Stage1Detector(nn.Module):
     def __init__(self):
         super().__init__()
@@ -74,34 +76,44 @@ class Stage1Detector(nn.Module):
             nn.Conv1d(32,64,3,padding=1), nn.ReLU(), nn.AdaptiveAvgPool1d(1)
         )
         self.fc = nn.Linear(64,2)
-    def forward(self,x):
-        # x: (B, C, T)
-        h = self.conv(x).squeeze(-1)
-        return self.fc(h)
+    def forward(self, x):
+        # x: (B, S, C, T)
+        B,S,C,T = x.shape
+        x = x.view(B*S, C, T)              # (B*S, C, T)
+        h = self.conv(x).squeeze(-1)       # (B*S, 64)
+        h = self.fc(h)                     # (B*S, 2)
+        return h.view(B, S, 2)             # (B, S, 2)
 
 def train_stage1(detector, loader, opt):
     detector.train()
-    total_loss = 0
+    total_loss = 0.0
+    total = 0
     for x,y in loader:
-        x,y = x.to(device), y.to(device)
+        # x: (B, S, C, T), y: (B,)
+        x, y = x.to(device), y.to(device)
         opt.zero_grad()
-        logits = detector(x)
+        logits = detector(x)              # (B, S, 2)
+        logits = logits.mean(dim=1)       # collapse S → (B, 2)
         loss = F.cross_entropy(logits, y)
         loss.backward()
         opt.step()
-        total_loss += loss.item()*x.size(0)
-    return total_loss/len(loader.dataset)
+        total_loss += loss.item() * x.size(0)
+        total += x.size(0)
+    return total_loss / total
 
 def eval_stage1(detector, loader):
     detector.eval()
-    correct=0; total=0
+    correct = 0
+    total = 0
     with torch.no_grad():
         for x,y in loader:
-            x,y = x.to(device), y.to(device)
-            preds = detector(x).argmax(dim=1)
-            correct += (preds==y).sum().item()
-            total += y.size(0)
-    return correct/total
+            x, y = x.to(device), y.to(device)
+            logits = detector(x).mean(dim=1)   # (B, 2)
+            preds  = logits.argmax(dim=1)
+            correct += (preds == y).sum().item()
+            total   += x.size(0)
+    return correct / total
+
 
 #  Hybrid 5‑way dataset 
 def get_true_subject_id(fn):
