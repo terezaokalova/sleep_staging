@@ -20,7 +20,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 # -------------------------
 
 from pathlib import Path
-# Point BASE at the same data folder you used originally:
+# On Pioneer your data live under /users/okalova/…
 BASE = Path("/users/okalova/sleep/STAT-4830-GOALZ-project/data")
 
 PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
