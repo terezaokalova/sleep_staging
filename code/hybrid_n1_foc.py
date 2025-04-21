@@ -989,3 +989,5 @@ def mixup_batch(raw, c22, labels, alpha=0.2):
     mixed_c22 = lam * c22 + (1 - lam) * c22[index]
     return mixed_raw, mixed_c22, labels, labels[index], lam
 
+if __name__ == "__main__":
+    main()
