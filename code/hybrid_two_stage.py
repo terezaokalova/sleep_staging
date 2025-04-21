@@ -308,22 +308,30 @@ def main():
 
     # prepare CV
     # split by subject
+        # prepare CV
     files = glob.glob(str(PROCESSED_DIR/"*_sequences.npz"))
     subj_map = {}
     for f in files:
         rid = Path(f).stem.split("_")[0]
-        subj_map.setdefault(get_true_subject_id(rid),[]).append(rid)
+        subj_map.setdefault(get_true_subject_id(rid), []).append(rid)
+
     subs = list(subj_map.keys())
-    np.random.seed(SEED); np.random.shuffle(subs)
-    folds = np.array_split(subs,5)
+    np.random.seed(SEED)
+    np.random.shuffle(subs)
+    folds = np.array_split(subs, 5)
 
     crf = CRF(N_CLASSES, batch_first=True)
-    for k in range(2):
-    # for k in range(5):
-        train_ids = [rid for i,f in enumerate(folds) if i!=k for rid in subj_map[f]]
-        test_ids  = folds[k].tolist()
-        ds2_tr = HybridSleepDataset(PROCESSED_DIR,CATCH22_DIR,train_ids)
-        ds2_te = HybridSleepDataset(PROCESSED_DIR,CATCH22_DIR,test_ids)
+    for k in range(2):  # or range(5)
+        # which subjects go in train vs test
+        test_subs  = folds[k].tolist()
+        train_subs = [s for i, f in enumerate(folds) if i != k for s in f]
+
+        # now expand subjects into recording IDs
+        train_ids = [rid for s in train_subs for rid in subj_map[s]]
+        test_ids  = [rid for s in test_subs  for rid in subj_map[s]]
+
+        ds2_tr = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, train_ids)
+        ds2_te = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, test_ids)
         # sampler oversample segments containing any N1
         # seg_has_n1 = (ds2_tr.labels==1).any(dim=1).numpy()
         # n1_cnt = seg_has_n1.sum(); n0_cnt = len(ds2_tr)-n1_cnt
