@@ -135,7 +135,8 @@ class HybridSleepDataset(Dataset):
             d = np.load(raw_map[rid])
             s,lab = d["sequences"], d["seq_labels"]  # (S,2,T), (S,)
             df = pd.read_csv(c22_map[rid])
-            f = df.drop("label",1).values
+            # f = df.drop("label",1).values
+            f = df.drop(columns="label").values
             # reshape/pad f→(S,SEQ_LENGTH,feat_dim)
             nS = s.shape[0]
             feat_dim = f.shape[1]
