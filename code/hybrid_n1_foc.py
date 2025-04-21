@@ -193,61 +193,61 @@ class EpochEncoder(nn.Module):
         self.dropout = nn.Dropout(0.2)
         
         # Debug prints
-        print(f"EpochEncoder initialized with embedding_dim={embedding_dim}")
+        # print(f"EpochEncoder initialized with embedding_dim={embedding_dim}")
     
     def forward(self, x):
         B, S, C, T = x.shape
-        print(f"EpochEncoder input shape: B={B}, S={S}, C={C}, T={T}")
+        # print(f"EpochEncoder input shape: B={B}, S={S}, C={C}, T={T}")
         
         x = x.view(B*S, C, T)
-        print(f"Reshaped to: {x.shape}")
+        # print(f"Reshaped to: {x.shape}")
         
         # First conv block with BN and pooling
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
         x = self.pool(x)
-        print(f"After first conv block: {x.shape}")
+        # print(f"After first conv block: {x.shape}")
         
         # Second conv block
         x = self.conv2(x)
         x = self.bn2(x)
         x = F.relu(x)
         x = self.pool(x)
-        print(f"After second conv block: {x.shape}")
+        # print(f"After second conv block: {x.shape}")
         
         # Third conv block
         x = self.conv3(x)
         x = self.bn3(x)
         x = F.relu(x)
         x = self.pool(x)
-        print(f"After third conv block: {x.shape}")
+        # print(f"After third conv block: {x.shape}")
         
         # Fourth conv block without pooling for finer features
         x = self.conv4(x)
         x = self.bn4(x)
         x = F.relu(x)
-        print(f"After fourth conv block: {x.shape}")
+        # print(f"After fourth conv block: {x.shape}")
         
         # Apply channel attention
         attn = self.channel_attn(x)
         x = x * attn
-        print(f"After attention: {x.shape}")
+        # print(f"After attention: {x.shape}")
         
         # Use adaptive pooling to get fixed output size
         x = self.adaptive_pool(x)
-        print(f"After adaptive pooling: {x.shape}")
+        # print(f"After adaptive pooling: {x.shape}")
         
         # Flatten and project
         x = x.view(B*S, -1)
-        print(f"After flattening: {x.shape}")
+        # print(f"After flattening: {x.shape}")
         
         x = self.dropout(F.relu(self.fc(x)))
         x = self.ln(x)
-        print(f"After FC and LN: {x.shape}")
+        # print(f"After FC and LN: {x.shape}")
         
         output = x.view(B, S, -1)
-        print(f"EpochEncoder final output shape: {output.shape}")
+        # print(f"EpochEncoder final output shape: {output.shape}")
         
         return output
 
@@ -583,7 +583,7 @@ def train_epoch(model, loader, optimizer, scheduler=None, mixup_alpha=0.2):
         
         # Check for numerical stability
         if not torch.isfinite(loss):
-            print("Skipping batch: non-finite loss")
+            # print("Skipping batch: non-finite loss")
             continue
         
         # Backward pass and optimization
