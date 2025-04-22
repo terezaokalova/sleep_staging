@@ -441,7 +441,8 @@ def eval_epoch2(model, detector, loader, crf):
             out[:, :, 1] = out[:, :, 1] + det_score
             
             # Batch CRF decoding
-            predictions = crf.decode(out)
+            # predictions = crf.decode(out)
+            predictions = out.argmax(dim=2)
             
             # Extend predictions and labels efficiently
             for pred_seq, label_seq in zip(predictions, labels):
@@ -539,7 +540,8 @@ def main():
             pin_memory=True
         )
         model = HybridSleepTransformer(ds2_tr.c22.size(-1)).to(device)
-        opt2 = optim.AdamW(model.parameters(), lr=LR2, weight_decay=1e-4)
+        # opt2 = optim.AdamW(model.parameters(), lr=LR2, weight_decay=1e-4)
+        opt2 = optim.AdamW(model.parameters(), lr=2e-6, weight_decay=1e-4)
         for ep in range(NUM_EPOCHS):
             l2 = train_epoch2(model, detector, loader2_tr, opt2)
             _,_,acc2 = eval_epoch2(model, detector, loader2_te, crf)
