@@ -203,9 +203,13 @@ class HybridSleepDataset(Dataset):
             c22s.append(f)
             labels.append(lab.astype(np.int64))
             
-        self.raw = torch.from_numpy(np.concatenate(seqs, 0))
-        self.c22 = torch.from_numpy(np.concatenate(c22s, 0))
-        self.labels = torch.from_numpy(np.concatenate(labels, 0))
+        # self.raw = torch.from_numpy(np.concatenate(seqs, 0))
+        # self.c22 = torch.from_numpy(np.concatenate(c22s, 0))
+        # self.labels = torch.from_numpy(np.concatenate(labels, 0))
+
+        self.raw = torch.from_numpy(np.concatenate(seqs, 0)).float()
+        self.c22 = torch.from_numpy(np.concatenate(c22s, 0)).float()
+        self.labels = torch.from_numpy(np.concatenate(labels, 0)).long()
         
         # print(f"Raw data shape: {self.raw.shape}")
         # print(f"C22 data shape: {self.c22.shape}")
@@ -215,12 +219,20 @@ class HybridSleepDataset(Dataset):
         return len(self.labels)
         
     def __getitem__(self, i):
-        # Reshape raw to ensure it's (S, C, T) where S=1 for a single window
-        raw_item = self.raw[i].unsqueeze(0) if self.raw[i].ndim == 2 else self.raw[i].unsqueeze(0)
-        c22_item = self.c22[i].unsqueeze(0) if self.c22[i].ndim == 2 else self.c22[i]
-        label_item = self.labels[i].unsqueeze(0) if self.labels[i].ndim == 0 else self.labels[i]
+        # More efficient tensor operations
+        raw_item = self.raw[i].unsqueeze(0)
+        c22_item = self.c22[i].unsqueeze(0)
+        label_item = self.labels[i].unsqueeze(0)
         
         return raw_item, c22_item, label_item
+    
+    # def __getitem__(self, i):
+    #     # Reshape raw to ensure it's (S, C, T) where S=1 for a single window
+    #     raw_item = self.raw[i].unsqueeze(0) if self.raw[i].ndim == 2 else self.raw[i].unsqueeze(0)
+    #     c22_item = self.c22[i].unsqueeze(0) if self.c22[i].ndim == 2 else self.c22[i]
+    #     label_item = self.labels[i].unsqueeze(0) if self.labels[i].ndim == 0 else self.labels[i]
+        
+    #     return raw_item, c22_item, label_item
 
 #  Encoders & Transformer 
 class EpochEncoder(nn.Module):
@@ -230,22 +242,24 @@ class EpochEncoder(nn.Module):
         self.conv2 = nn.Conv1d(16, 32, 3, padding=1)
         self.conv3 = nn.Conv1d(32, 64, 3, padding=1)
         self.pool = nn.MaxPool1d(2)
-        # Replace fixed size with adaptive pooling
-        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_size=16)  # Adjust this size as needed
-        self.fc = nn.Linear(64 * 16, emb)  # 64 channels × 16 output size
+        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_size=16)
+        self.fc = nn.Linear(64 * 16, emb)
         self.ln = nn.LayerNorm(emb)
         
     def forward(self, x):
+        # Reshape in one step instead of multiple steps
         B, S, C, T = x.shape
-        h = x.view(B*S, C, T)
+        h = x.reshape(-1, C, T)  # More efficient than view
+        
+        # Apply operations to the entire batch at once
         h = self.pool(F.relu(self.conv1(h)))
         h = self.pool(F.relu(self.conv2(h)))
         h = self.pool(F.relu(self.conv3(h)))
-        # Add adaptive pooling to ensure fixed size for the FC layer
         h = self.adaptive_pool(h)
-        # Get actual flattened size
-        h = h.view(B*S, -1)
-        h = self.ln(self.fc(h))
+        
+        # Flatten and transform in one step
+        h = self.ln(self.fc(h.reshape(B*S, -1)))
+        
         return h.view(B, S, -1)
 
 class C22Encoder(nn.Module):
@@ -261,18 +275,20 @@ class C22Encoder(nn.Module):
         # x shape: (B, S, SEQ_LENGTH, D)
         B, S, SEQ_LEN, D = x.shape
         
-        # Flatten the sequence dimension for processing
-        x_flat = x.view(B*S*SEQ_LEN, D)
+        # Process the entire batch of features at once
+        # Reshape to (B*S*SEQ_LEN, D) for batch processing
+        x_flat = x.reshape(-1, D)
         
-        # Process features
-        h = F.relu(self.ln1(self.fc1(self.ln0(x_flat))))
+        # Apply feature transformations in a single batch
+        h = self.ln0(x_flat)
+        h = F.relu(self.ln1(self.fc1(h)))
         h = self.ln2(self.fc2(h))
         
         # Reshape back to (B*S, SEQ_LEN, emb)
         h = h.view(B*S, SEQ_LEN, -1)
         
-        # Take the mean over the sequence length to get a single vector
-        h = h.mean(dim=1)  # (B*S, emb)
+        # More efficient way to take mean: use torch.mean with specified dim
+        h = torch.mean(h, dim=1)  # (B*S, emb)
         
         # Reshape to (B, S, emb)
         return h.view(B, S, -1)
@@ -396,41 +412,55 @@ def train_epoch2(model, detector, loader, opt):
 
     return loss_sum / total
 
-
 def eval_epoch2(model, detector, loader, crf):
     model.eval()
-    all_preds = []
-    all_labels = []
+    predictions_list = []
+    labels_list = []
 
     with torch.no_grad():
         for raw, c22, labels in loader:
+# def eval_epoch2(model, detector, loader, crf):
+#     model.eval()
+#     all_preds = []
+#     all_labels = []
+
+#     with torch.no_grad():
+#         for raw, c22, labels in loader:
             raw, c22, labels = raw.to(device), c22.to(device), labels.to(device)
             
-            # Reshape raw for detector
+            # Process all samples in the batch at once
             B, S, C, T = raw.shape
-            raw_reshaped = raw.view(B*S, C, T)
+            raw_reshaped = raw.reshape(-1, C, T)
 
-            # 1) Stage 1 detector
-            det_logits = detector(raw_reshaped)     # -> (B*S, 2)
-            det_score = det_logits[:, 1].view(B, S)  # -> (B, S)
+            # Get detector scores for all samples at once
+            det_logits = detector(raw_reshaped)
+            det_score = det_logits[:, 1].view(B, S)
 
-            # 2) Transformer
-            out = model(raw, c22)  # (B, S, num_classes)
+            # Single forward pass for all samples
+            out = model(raw, c22)
             out[:, :, 1] = out[:, :, 1] + det_score
             
-            # Use CRF for sequence modeling
-            emissions = out
+            # Batch CRF decoding
+            predictions = crf.decode(out)
             
-            # Get best sequence path
-            predictions = crf.decode(emissions)
-            
-            # Flatten predictions and labels for metrics
+            # Extend predictions and labels efficiently
             for pred_seq, label_seq in zip(predictions, labels):
-                all_preds.extend(pred_seq)
-                all_labels.extend(label_seq.cpu().tolist())
+                predictions_list.append(torch.tensor(pred_seq, device='cpu'))
+                labels_list.append(label_seq.cpu())
+    
+            # for pred_seq, label_seq in zip(predictions, labels):
+            #     all_preds.extend(pred_seq)
+            #     all_labels.extend(label_seq.cpu().tolist())
 
-    acc = np.mean(np.array(all_preds) == np.array(all_labels))
-    return all_preds, all_labels, acc
+    # # Use numpy vectorized operations for metrics
+    # acc = np.mean(np.array(all_preds) == np.array(all_labels))
+    # return all_preds, all_labels, acc
+
+    all_preds = torch.cat(predictions_list).numpy()
+    all_labels = torch.cat(labels_list).numpy()
+    
+    acc = np.mean(all_preds == all_labels)
+    return all_preds.tolist(), all_labels.tolist(), acc
 
 #  Main 
 def main():
