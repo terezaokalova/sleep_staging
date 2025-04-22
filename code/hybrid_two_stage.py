@@ -161,41 +161,72 @@ class HybridSleepDataset(Dataset):
         raw_map = {Path(p).stem.split("_")[0]:p for p in all_raw}
         c22_map = {Path(p).stem.split("_")[0]:p for p in all_c22}
         ids = sorted(raw_map.keys() & c22_map.keys())
-        seqs,c22s,labels = [],[],[]
+        seqs, c22s, labels = [], [], []
+        
         for rid in ids:
             d = np.load(raw_map[rid])
-            s,lab = d["sequences"], d["seq_labels"]  # (S,2,T), (S,)
+            s, lab = d["sequences"], d["seq_labels"]  # (S,2,T), (S,)
+            
+            # Ensure s is 3D (S, C, T)
+            if s.ndim == 4:  # Handle (Nseg, S, C, T) case
+                Nseg, S, C, T = s.shape
+                s = s.reshape(Nseg * S, C, T)
+                lab = lab.reshape(Nseg * S)
+            
             df = pd.read_csv(c22_map[rid])
-            # f = df.drop("label",1).values
             f = df.drop(columns="label").values
+            
             # reshape/pad f→(S,SEQ_LENGTH,feat_dim)
             nS = s.shape[0]
             feat_dim = f.shape[1]
             exp = nS*SEQ_LENGTH
-            if f.shape[0]!=exp:
-                newf = np.zeros((nS,SEQ_LENGTH,feat_dim),np.float32)
+            
+            if f.shape[0] != exp:
+                newf = np.zeros((nS, SEQ_LENGTH, feat_dim), np.float32)
                 for i in range(nS):
-                    st=i*SEQ_STRIDE; en=st+SEQ_LENGTH
-                    if en<=f.shape[0]:
-                        newf[i]=f[st:en]
+                    st = i*SEQ_STRIDE; en = st+SEQ_LENGTH
+                    if en <= f.shape[0]:
+                        newf[i] = f[st:en]
                     else:
-                        av=f.shape[0]-st
-                        if av>0:
-                            newf[i,:av]=f[st:]
-                            newf[i,av:]=f[-1]
+                        av = f.shape[0]-st
+                        if av > 0:
+                            newf[i, :av] = f[st:]
+                            newf[i, av:] = f[-1]
                         else:
-                            newf[i]=newf[i-1]
-                f=newf
+                            newf[i] = newf[i-1]
+                f = newf
             else:
-                f=f.reshape(nS,SEQ_LENGTH,feat_dim).astype(np.float32)
+                f = f.reshape(nS, SEQ_LENGTH, feat_dim).astype(np.float32)
+                
+            # Reshape to ensure s is (S, C, T)
+            if s.ndim == 2:  # If (S*C, T)
+                C = 2  # Assuming 2 channels
+                s = s.reshape(nS, C, -1)
+            
             seqs.append(s.astype(np.float32))
             c22s.append(f)
             labels.append(lab.astype(np.int64))
-        self.raw      = torch.from_numpy(np.concatenate(seqs,0))
-        self.c22      = torch.from_numpy(np.concatenate(c22s,0))
-        self.labels   = torch.from_numpy(np.concatenate(labels,0))
-    def __len__(self): return self.raw.shape[0]
-    def __getitem__(self,i):
+            
+        self.raw = torch.from_numpy(np.concatenate(seqs, 0))
+        self.c22 = torch.from_numpy(np.concatenate(c22s, 0))
+        self.labels = torch.from_numpy(np.concatenate(labels, 0))
+        
+        # Reshape raw to match expected format (B, S=1, C, T)
+        # where B is the total number of segments
+        B = self.raw.shape[0]
+        C, T = self.raw.shape[1], self.raw.shape[2]
+        self.raw = self.raw.view(B, 1, C, T)
+        
+        # Reshape c22 similarly
+        self.c22 = self.c22.view(B, 1, SEQ_LENGTH, -1)
+        
+        # Reshape labels (B, 1)
+        self.labels = self.labels.view(B, 1)
+        
+    def __len__(self): 
+        return self.raw.shape[0]
+        
+    def __getitem__(self, i):
         return self.raw[i], self.c22[i], self.labels[i]
 
 #  Encoders & Transformer 
@@ -287,29 +318,40 @@ def train_epoch2(model, detector, loader, opt):
     loss_sum = 0.0
 
     for raw, c22, labels in loader:
-        # raw: (B, C, T), c22: (B, SEQ_LENGTH, feat), labels: (B,)
+        # raw: (B, S, C, T), c22: (B, S, feat_dim), labels: (B, S)
         raw, c22, labels = raw.to(device), c22.to(device), labels.to(device)
-
-        # 1) Stage 1 detector on each window
+        
+        # Reset gradients
+        opt.zero_grad()  # This was missing in the original code
+        
+        # Need to reshape raw for detector (which expects (B, C, T))
+        B, S, C, T = raw.shape
+        raw_reshaped = raw.view(B*S, C, T)
+        
+        # 1) Stage 1 detector on each window
         with torch.no_grad():
-            det_logits = detector(raw)      # -> (B, 2)
-            det_score  = det_logits[:, 1]   # -> (B,)
-
-        # 2) Turn each window into a “seq of length 1”
-        raw_b = raw.unsqueeze(1)           # -> (B, 1, C, T)
-        c22_b = c22.unsqueeze(1)           # -> (B, 1, feat)
-
+            det_logits = detector(raw_reshaped)      # -> (B*S, 2)
+            det_score = det_logits[:, 1].view(B, S)  # -> (B, S)
+        
         # 3) Forward through transformer + fusion
-        out = model(raw_b, c22_b).squeeze(1)   # -> (B, num_classes)
-        out[:, 1] = out[:, 1] + det_score      # add the N1 bias
-
-        # 4) Compute per‐window loss
-        loss = F.cross_entropy(out, labels)
+        out = model(raw, c22)   # -> (B, S, num_classes)
+        
+        # Add N1 bias
+        out[:, :, 1] = out[:, :, 1] + det_score
+        
+        # 4) Compute loss - first reshape outputs and labels
+        out_flat = out.view(-1, N_CLASSES)
+        labels_flat = labels.view(-1)
+        
+        # Use focal loss or cross-entropy
+        # loss = focal_loss(out, labels)
+        loss = F.cross_entropy(out_flat, labels_flat)
+        
         loss.backward()
         opt.step()
 
-        loss_sum += loss.item() * raw.size(0)
-        total    += raw.size(0)
+        loss_sum += loss.item() * B
+        total += B
 
     return loss_sum / total
 
@@ -322,22 +364,32 @@ def eval_epoch2(model, detector, loader, crf):
     with torch.no_grad():
         for raw, c22, labels in loader:
             raw, c22, labels = raw.to(device), c22.to(device), labels.to(device)
+            
+            # Reshape raw for detector
+            B, S, C, T = raw.shape
+            raw_reshaped = raw.view(B*S, C, T)
 
-            # 1) Stage 1 detector
-            det_logits = detector(raw)     # -> (B, 2)
-            det_score  = det_logits[:, 1]  # -> (B,)
+            # 1) Stage 1 detector
+            det_logits = detector(raw_reshaped)     # -> (B*S, 2)
+            det_score = det_logits[:, 1].view(B, S)  # -> (B, S)
 
-            # 2) Transformer on “seq of 1”
-            out = model(raw.unsqueeze(1), c22.unsqueeze(1)).squeeze(1)  # (B, num_classes)
-            out[:, 1] = out[:, 1] + det_score
-
-            preds = out.argmax(dim=1)
-            all_preds .extend(preds .cpu().tolist())
-            all_labels.extend(labels.cpu().tolist())
+            # 2) Transformer
+            out = model(raw, c22)  # (B, S, num_classes)
+            out[:, :, 1] = out[:, :, 1] + det_score
+            
+            # Use CRF for sequence modeling
+            emissions = out
+            
+            # Get best sequence path
+            predictions = crf.decode(emissions)
+            
+            # Flatten predictions and labels for metrics
+            for pred_seq, label_seq in zip(predictions, labels):
+                all_preds.extend(pred_seq)
+                all_labels.extend(label_seq.cpu().tolist())
 
     acc = np.mean(np.array(all_preds) == np.array(all_labels))
     return all_preds, all_labels, acc
-
 
 #  Main 
 def main():
@@ -373,6 +425,7 @@ def main():
 
     # crf = CRF(N_CLASSES, batch_first=True)
     crf = CRF(N_CLASSES, batch_first=True).to(device)
+    # For Stage 2
     for k in range(2):  # or range(5)
         # which subjects go in train vs test
         test_subs  = folds[k].tolist()
@@ -384,21 +437,10 @@ def main():
 
         ds2_tr = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, train_ids)
         ds2_te = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, test_ids)
-        # sampler oversample segments containing any N1
-        # seg_has_n1 = (ds2_tr.labels==1).any(dim=1).numpy()
-        # n1_cnt = seg_has_n1.sum(); n0_cnt = len(ds2_tr)-n1_cnt
-        # w_n1 = (n0_cnt/n1_cnt)*(DESIRED_N1/(1-DESIRED_N1))
-        # sw2 = np.where(seg_has_n1, w_n1, 1.0)
-        # loader2_tr = DataLoader(ds2_tr, BATCH_SIZE,
-        #                         sampler=WeightedRandomSampler(sw2,len(sw2),True),
-        #                         num_workers=4, pin_memory=True)
-        # loader2_te = DataLoader(ds2_te, BATCH_SIZE, shuffle=False,
-        #                         num_workers=4, pin_memory=True)
-        # sampler oversample _windows_ containing N1
-        # (ds2_tr.labels is already a 1D tensor of length num_windows)
-        # prev
-        # seg_has_n1 = (ds2_tr.labels == 1).numpy()
-        seg_has_n1 = (ds2_tr.labels == 1).any(dim=1).cpu().numpy()
+        
+        # Correct way to get binary N1 indicator from labels
+        # Labels now have shape (B, 1)
+        seg_has_n1 = (ds2_tr.labels == 1).any(dim=1).cpu().numpy()  
         n1_cnt = seg_has_n1.sum()
         n0_cnt = len(ds2_tr) - n1_cnt
         w_n1 = (n0_cnt / n1_cnt) * (DESIRED_N1 / (1 - DESIRED_N1))
