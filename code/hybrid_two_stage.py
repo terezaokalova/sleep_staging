@@ -207,10 +207,9 @@ class HybridSleepDataset(Dataset):
         self.c22 = torch.from_numpy(np.concatenate(c22s, 0))
         self.labels = torch.from_numpy(np.concatenate(labels, 0))
         
-        # Print shape information for debugging
-        print(f"Raw data shape: {self.raw.shape}")
-        print(f"C22 data shape: {self.c22.shape}")
-        print(f"Labels shape: {self.labels.shape}")
+        # print(f"Raw data shape: {self.raw.shape}")
+        # print(f"C22 data shape: {self.c22.shape}")
+        # print(f"Labels shape: {self.labels.shape}")
         
     def __len__(self): 
         return len(self.labels)
@@ -320,16 +319,14 @@ class HybridSleepTransformer(nn.Module):
                 if m.bias is not None: m.bias.data.zero_()
                 
     def forward(self, raw, c22):
-        # Print input shapes for debugging
-        print(f"Raw input shape: {raw.shape}")
-        print(f"C22 input shape: {c22.shape}")
+        # print(f"Raw input shape: {raw.shape}")
+        # print(f"C22 input shape: {c22.shape}")
         
         r = self.eenc(raw)
         c = self.cenc(c22)
         
-        # Print encoded shapes for debugging
-        print(f"Raw encoded shape: {r.shape}")
-        print(f"C22 encoded shape: {c.shape}")
+        # print(f"Raw encoded shape: {r.shape}")
+        # print(f"C22 encoded shape: {c.shape}")
         
         x = torch.cat([r, c], dim=2)
         x = F.relu(self.lin(self.fuse(x)))
@@ -482,12 +479,11 @@ def main():
         ds2_tr = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, train_ids)
         ds2_te = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, test_ids)
         
-        # Print more information about the first batch
         sample_batch = next(iter(DataLoader(ds2_tr, batch_size=4)))
         raw_batch, c22_batch, label_batch = sample_batch
-        print(f"Sample raw batch shape: {raw_batch.shape}")
-        print(f"Sample c22 batch shape: {c22_batch.shape}")
-        print(f"Sample label batch shape: {label_batch.shape}")
+        # print(f"Sample raw batch shape: {raw_batch.shape}")
+        # print(f"Sample c22 batch shape: {c22_batch.shape}")
+        # print(f"Sample label batch shape: {label_batch.shape}")
         
         # Correct way to get binary N1 indicator from labels
         # Labels now have shape (B, 1)
