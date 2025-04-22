@@ -165,9 +165,9 @@ class HybridSleepDataset(Dataset):
         
         for rid in ids:
             d = np.load(raw_map[rid])
-            s, lab = d["sequences"], d["seq_labels"]  # (S,2,T), (S,)
+            s, lab = d["sequences"], d["seq_labels"]  # (S,C,T), (S,)
             
-            # Ensure s is 3D (S, C, T)
+            # Reshape s if needed to ensure it's (S, C, T)
             if s.ndim == 4:  # Handle (Nseg, S, C, T) case
                 Nseg, S, C, T = s.shape
                 s = s.reshape(Nseg * S, C, T)
@@ -197,11 +197,6 @@ class HybridSleepDataset(Dataset):
                 f = newf
             else:
                 f = f.reshape(nS, SEQ_LENGTH, feat_dim).astype(np.float32)
-                
-            # Reshape to ensure s is (S, C, T)
-            if s.ndim == 2:  # If (S*C, T)
-                C = 2  # Assuming 2 channels
-                s = s.reshape(nS, C, -1)
             
             seqs.append(s.astype(np.float32))
             c22s.append(f)
@@ -211,43 +206,47 @@ class HybridSleepDataset(Dataset):
         self.c22 = torch.from_numpy(np.concatenate(c22s, 0))
         self.labels = torch.from_numpy(np.concatenate(labels, 0))
         
-        # Reshape raw to match expected format (B, S=1, C, T)
-        # where B is the total number of segments
-        B = self.raw.shape[0]
-        C, T = self.raw.shape[1], self.raw.shape[2]
-        self.raw = self.raw.view(B, 1, C, T)
-        
-        # Reshape c22 similarly
-        self.c22 = self.c22.view(B, 1, SEQ_LENGTH, -1)
-        
-        # Reshape labels (B, 1)
-        self.labels = self.labels.view(B, 1)
+        # Print shape information for debugging
+        print(f"Raw data shape: {self.raw.shape}")
+        print(f"C22 data shape: {self.c22.shape}")
+        print(f"Labels shape: {self.labels.shape}")
         
     def __len__(self): 
-        return self.raw.shape[0]
+        return len(self.labels)
         
     def __getitem__(self, i):
-        return self.raw[i], self.c22[i], self.labels[i]
+        # Reshape raw to ensure it's (S, C, T) where S=1 for a single window
+        raw_item = self.raw[i].unsqueeze(0) if self.raw[i].ndim == 2 else self.raw[i].unsqueeze(0)
+        c22_item = self.c22[i].unsqueeze(0) if self.c22[i].ndim == 2 else self.c22[i]
+        label_item = self.labels[i].unsqueeze(0) if self.labels[i].ndim == 0 else self.labels[i]
+        
+        return raw_item, c22_item, label_item
 
 #  Encoders & Transformer 
 class EpochEncoder(nn.Module):
     def __init__(self, emb=128):
         super().__init__()
-        self.conv1 = nn.Conv1d(2,16,5,padding=2)
-        self.conv2 = nn.Conv1d(16,32,3,padding=1)
-        self.conv3 = nn.Conv1d(32,64,3,padding=1)
-        self.pool  = nn.MaxPool1d(2)
-        self.fc    = nn.Linear(64*( (1500//8) ), emb)  # assume T=1500
-        self.ln    = nn.LayerNorm(emb)
-    def forward(self,x):
-        B,S,C,T = x.shape
-        h = x.view(B*S,C,T)
+        self.conv1 = nn.Conv1d(2, 16, 5, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, 3, padding=1)
+        self.conv3 = nn.Conv1d(32, 64, 3, padding=1)
+        self.pool = nn.MaxPool1d(2)
+        # Replace fixed size with adaptive pooling
+        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_size=16)  # Adjust this size as needed
+        self.fc = nn.Linear(64 * 16, emb)  # 64 channels × 16 output size
+        self.ln = nn.LayerNorm(emb)
+        
+    def forward(self, x):
+        B, S, C, T = x.shape
+        h = x.view(B*S, C, T)
         h = self.pool(F.relu(self.conv1(h)))
         h = self.pool(F.relu(self.conv2(h)))
         h = self.pool(F.relu(self.conv3(h)))
-        h = h.view(B*S,-1)
+        # Add adaptive pooling to ensure fixed size for the FC layer
+        h = self.adaptive_pool(h)
+        # Get actual flattened size
+        h = h.view(B*S, -1)
         h = self.ln(self.fc(h))
-        return h.view(B,S,-1)
+        return h.view(B, S, -1)
 
 class C22Encoder(nn.Module):
     def __init__(self,in_d,emb=64):
@@ -263,38 +262,67 @@ class C22Encoder(nn.Module):
         return h.view(B,S,-1)
 
 class HybridSleepTransformer(nn.Module):
-    def __init__(self,c22_dim, raw_emb=128, c22_emb=64,
+    def __init__(self, c22_dim, raw_emb=128, c22_emb=64,
                  num_classes=5, num_layers=3, num_heads=8,
                  dropout=0.1, seq_len=SEQ_LENGTH):
         super().__init__()
         self.eenc = EpochEncoder(raw_emb)
-        self.cenc = C22Encoder(c22_dim,c22_emb)
+        self.cenc = C22Encoder(c22_dim, c22_emb)
         D = raw_emb + c22_emb
         self.fuse = nn.LayerNorm(D)
-        self.lin  = nn.Linear(D,D)
-        self.pos  = nn.Parameter(torch.randn(1,seq_len,D))
+        self.lin = nn.Linear(D, D)
+        
+        # Create positional encoding that can handle variable sequence lengths
+        self.register_buffer("pos", torch.zeros(1, seq_len, D))
+        self._init_positional_encoding(seq_len, D)
+        
         ff = 8*D
-        layer = nn.TransformerEncoderLayer(d_model=D,nhead=num_heads,
+        layer = nn.TransformerEncoderLayer(d_model=D, nhead=num_heads,
                                            dim_feedforward=ff,
                                            dropout=dropout,
                                            batch_first=True)
-        self.tfm = nn.TransformerEncoder(layer,num_layers=num_layers)
-        self.out = nn.Linear(D,num_classes)
+        self.tfm = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.out = nn.Linear(D, num_classes)
         self._init_weights()
+        
+    def _init_positional_encoding(self, seq_len, d_model):
+        """Initialize positional encoding parameter"""
+        position = torch.arange(seq_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        
+        pos_enc = torch.zeros(1, seq_len, d_model)
+        pos_enc[0, :, 0::2] = torch.sin(position * div_term)
+        pos_enc[0, :, 1::2] = torch.cos(position * div_term)
+        
+        self.pos = pos_enc
+        
     def _init_weights(self):
         for m in self.modules():
-            if isinstance(m,nn.Linear):
+            if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None: m.bias.data.zero_()
-    def forward(self,raw,c22):
-        B,S,_,_ = raw.shape
+                
+    def forward(self, raw, c22):
+        # Print input shapes for debugging
+        print(f"Raw input shape: {raw.shape}")
+        print(f"C22 input shape: {c22.shape}")
+        
         r = self.eenc(raw)
         c = self.cenc(c22)
-        x = torch.cat([r,c],dim=2)
+        
+        # Print encoded shapes for debugging
+        print(f"Raw encoded shape: {r.shape}")
+        print(f"C22 encoded shape: {c.shape}")
+        
+        x = torch.cat([r, c], dim=2)
         x = F.relu(self.lin(self.fuse(x)))
-        x = x + self.pos[:,:x.size(1)]
+        
+        # Use only as much of the positional encoding as needed
+        seq_len = x.size(1)
+        x = x + self.pos[:, :seq_len]
+        
         x = self.tfm(x)
-        return self.out(x)  # (B,S,5)
+        return self.out(x)  # (B, S, 5)
 
 #  Loss & Train/Eval 
 def focal_loss(inputs, targets,
@@ -322,9 +350,9 @@ def train_epoch2(model, detector, loader, opt):
         raw, c22, labels = raw.to(device), c22.to(device), labels.to(device)
         
         # Reset gradients
-        opt.zero_grad()  # This was missing in the original code
+        opt.zero_grad()
         
-        # Need to reshape raw for detector (which expects (B, C, T))
+        # Reshape raw for detector (which expects (B, C, T))
         B, S, C, T = raw.shape
         raw_reshaped = raw.view(B*S, C, T)
         
@@ -333,18 +361,17 @@ def train_epoch2(model, detector, loader, opt):
             det_logits = detector(raw_reshaped)      # -> (B*S, 2)
             det_score = det_logits[:, 1].view(B, S)  # -> (B, S)
         
-        # 3) Forward through transformer + fusion
+        # Forward through transformer + fusion
         out = model(raw, c22)   # -> (B, S, num_classes)
         
         # Add N1 bias
         out[:, :, 1] = out[:, :, 1] + det_score
         
-        # 4) Compute loss - first reshape outputs and labels
+        # Compute loss - reshape outputs and labels
         out_flat = out.view(-1, N_CLASSES)
         labels_flat = labels.view(-1)
         
         # Use focal loss or cross-entropy
-        # loss = focal_loss(out, labels)
         loss = F.cross_entropy(out_flat, labels_flat)
         
         loss.backward()
@@ -437,6 +464,13 @@ def main():
 
         ds2_tr = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, train_ids)
         ds2_te = HybridSleepDataset(PROCESSED_DIR, CATCH22_DIR, test_ids)
+        
+        # Print more information about the first batch
+        sample_batch = next(iter(DataLoader(ds2_tr, batch_size=4)))
+        raw_batch, c22_batch, label_batch = sample_batch
+        print(f"Sample raw batch shape: {raw_batch.shape}")
+        print(f"Sample c22 batch shape: {c22_batch.shape}")
+        print(f"Sample label batch shape: {label_batch.shape}")
         
         # Correct way to get binary N1 indicator from labels
         # Labels now have shape (B, 1)
