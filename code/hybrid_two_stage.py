@@ -2,6 +2,7 @@
 import os, sys, glob
 from pathlib import Path
 import numpy as np
+import math
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -249,17 +250,33 @@ class EpochEncoder(nn.Module):
         return h.view(B, S, -1)
 
 class C22Encoder(nn.Module):
-    def __init__(self,in_d,emb=64):
+    def __init__(self, in_d, emb=64):
         super().__init__()
         self.ln0 = nn.LayerNorm(in_d)
-        self.fc1 = nn.Linear(in_d,128); self.ln1=nn.LayerNorm(128)
-        self.fc2 = nn.Linear(128,emb); self.ln2=nn.LayerNorm(emb)
-    def forward(self,x):
-        B,S,D = x.shape
-        h = x.view(B*S,D)
-        h = F.relu(self.ln1(self.fc1(self.ln0(h))))
+        self.fc1 = nn.Linear(in_d, 128)
+        self.ln1 = nn.LayerNorm(128)
+        self.fc2 = nn.Linear(128, emb)
+        self.ln2 = nn.LayerNorm(emb)
+        
+    def forward(self, x):
+        # x shape: (B, S, SEQ_LENGTH, D)
+        B, S, SEQ_LEN, D = x.shape
+        
+        # Flatten the sequence dimension for processing
+        x_flat = x.view(B*S*SEQ_LEN, D)
+        
+        # Process features
+        h = F.relu(self.ln1(self.fc1(self.ln0(x_flat))))
         h = self.ln2(self.fc2(h))
-        return h.view(B,S,-1)
+        
+        # Reshape back to (B*S, SEQ_LEN, emb)
+        h = h.view(B*S, SEQ_LEN, -1)
+        
+        # Take the mean over the sequence length to get a single vector
+        h = h.mean(dim=1)  # (B*S, emb)
+        
+        # Reshape to (B, S, emb)
+        return h.view(B, S, -1)
 
 class HybridSleepTransformer(nn.Module):
     def __init__(self, c22_dim, raw_emb=128, c22_emb=64,
@@ -474,7 +491,8 @@ def main():
         
         # Correct way to get binary N1 indicator from labels
         # Labels now have shape (B, 1)
-        seg_has_n1 = (ds2_tr.labels == 1).any(dim=1).cpu().numpy()  
+        # seg_has_n1 = (ds2_tr.labels == 1).any(dim=1).cpu().numpy()  
+        seg_has_n1 = (ds2_tr.labels == 1).cpu().numpy()
         n1_cnt = seg_has_n1.sum()
         n0_cnt = len(ds2_tr) - n1_cnt
         w_n1 = (n0_cnt / n1_cnt) * (DESIRED_N1 / (1 - DESIRED_N1))
