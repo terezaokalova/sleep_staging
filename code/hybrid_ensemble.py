@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os, sys, glob
 from pathlib import Path
 import numpy as np
