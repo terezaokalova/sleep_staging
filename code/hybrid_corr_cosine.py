@@ -20,12 +20,12 @@ from sklearn.metrics import classification_report, confusion_matrix
 # -------------------------
 
 from pathlib import Path
-# BASE = os.environ["HOME"] + "/STAT-4830-GOALZ-project/data"
-# print(BASE)
+BASE = os.environ["HOME"] + "/sleep/STAT-4830-GOALZ-project/data"
+print(BASE)
 
-# PROCESSED_DATA_DIR = BASE + "/processed_sleepedf"
-# CATCH22_DATA_DIR   = BASE + "/c22_processed_sleepedf"
-# RESULTS_DIR        = BASE + "/hybrid_model_results"
+PROCESSED_DATA_DIR = BASE + "/processed_sleepedf"
+CATCH22_DATA_DIR   = BASE + "/c22_processed_sleepedf"
+RESULTS_DIR        = BASE + "/hybrid_model_results"
 
 print("Checking directory access:")
 print(f"  {PROCESSED_DATA_DIR!s} exists: {PROCESSED_DATA_DIR.exists()}")
