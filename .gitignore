@@ -8,8 +8,6 @@ results/models/*.pkl
 /results/metrics/RandomForest*
 /results/plots/RandomForest*
 
-#–– ignore everything
-*
 # but keep Python files and these two metadata files
 !*.py
 !/.gitignore
