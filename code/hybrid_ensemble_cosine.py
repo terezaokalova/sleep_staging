@@ -16,6 +16,12 @@ BASE               = Path("/users/kimliang/sleep/STAT-4830-GOALZ-project/data")
 PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
 CATCH22_DATA_DIR   = BASE/"c22_processed_sleepedf"
 RESULTS_DIR        = BASE/"hybrid_ensemble_results"
+
+print(BASE)
+print(PROCESSED_DATA_DIR)
+print(CATCH22_DATA_DIR)
+print(RESULTS_DIR)
+
 for d in ("plots","models","metrics"):
     (RESULTS_DIR/d).mkdir(parents=True, exist_ok=True)
 
