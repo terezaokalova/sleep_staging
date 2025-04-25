@@ -20,24 +20,25 @@ from sklearn.metrics import classification_report, confusion_matrix
 # -------------------------
 
 from pathlib import Path
-# BASE = os.environ["HOME"] + "/STAT-4830-GOALZ-project/data"
-# print(BASE)
+print(os.environ["HOME"])
+BASE = Path(os.environ["HOME"] + "/Documents/STAT4830/STAT-4830-GOALZ-project/data")
+# BASE = "/Users/kimberly/Documents/STAT4830/STAT-4830-GOALZ-project/data"
+print(BASE)
 
-# PROCESSED_DATA_DIR = BASE + "/processed_sleepedf"
-# CATCH22_DATA_DIR   = BASE + "/c22_processed_sleepedf"
-# RESULTS_DIR        = BASE + "/hybrid_model_results"
+PROCESSED_DATA_DIR = BASE + "/processed_sleepedf"
+CATCH22_DATA_DIR   = BASE + "/c22_processed_sleepedf"
+RESULTS_DIR        = BASE + "/hybrid_model_results"
 
 print("Checking directory access:")
-print(f"  {PROCESSED_DATA_DIR!s} exists: {PROCESSED_DATA_DIR.exists()}")
-print(f"  {CATCH22_DATA_DIR!s} exists: {CATCH22_DATA_DIR.exists()}")
+# print(f"  {PROCESSED_DATA_DIR!s} exists: {PROCESSED_DATA_DIR.exists()}")
+# print(f"  {CATCH22_DATA_DIR!s} exists: {CATCH22_DATA_DIR.exists()}")
 
-if not PROCESSED_DATA_DIR.exists() or not CATCH22_DATA_DIR.exists():
-    print("ERROR: Data directories not found. Please re-run preprocessing & Catch22 steps.")
-    sys.exit(1)
+# if not PROCESSED_DATA_DIR.exists() or not CATCH22_DATA_DIR.exists():
+#     print("ERROR: Data directories not found. Please re-run preprocessing & Catch22 steps.")
+#     sys.exit(1)
 
-# Create results subdirs
-for sub in ["plots","models","metrics"]:
-    (RESULTS_DIR/sub).mkdir(parents=True, exist_ok=True)
+# for sub in ["plots","models","metrics"]:
+#     (RESULTS_DIR/sub).mkdir(parents=True, exist_ok=True)
 
 # Reproducibility
 SEED = 42
