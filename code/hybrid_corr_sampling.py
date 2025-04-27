@@ -960,8 +960,8 @@ def main():
 
         # Final evaluation on best model
         print(f"\nLoading best model from epoch {best_epoch+1}")
-        checkpoint = torch.load(RESULTS_DIR/f"models/best_fold{k+1}.pth")
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # checkpoint = torch.load(RESULTS_DIR/f"models/best_fold{k+1}.pth")
+        # model.load_state_dict(checkpoint['model_state_dict'])
         
         # Final evaluation with detailed metrics
         _, _, final_acc, final_preds, final_labels = eval_epoch(model, test_loader, apply_smoothing=True)
