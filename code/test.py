@@ -1,8 +1,8 @@
 import os, re
 
 from pathlib import Path
-print(os.environ["HOME"])
-BASE = Path(os.environ["HOME"])/"Documents/STAT4830/STAT-4830-GOALZ-project/data"
+# print(os.environ["HOME"])
+BASE = Path("/users/kimliang/sleep/STAT-4830-GOALZ-project/data")
 # BASE = "/Users/kimberly/Documents/STAT4830/STAT-4830-GOALZ-project/data"
 
 PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
