@@ -21,13 +21,12 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 from pathlib import Path
 print(os.environ["HOME"])
-BASE = Path(os.environ["HOME"] + "/Documents/STAT4830/STAT-4830-GOALZ-project/data")
+BASE = Path(os.environ["HOME"])/"Documents/STAT4830/STAT-4830-GOALZ-project/data"
 # BASE = "/Users/kimberly/Documents/STAT4830/STAT-4830-GOALZ-project/data"
-print(BASE)
 
-PROCESSED_DATA_DIR = BASE + "/processed_sleepedf"
-CATCH22_DATA_DIR   = BASE + "/c22_processed_sleepedf"
-RESULTS_DIR        = BASE + "/hybrid_model_results"
+PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
+CATCH22_DATA_DIR   = BASE/"c22_processed_sleepedf"
+RESULTS_DIR        = BASE/"hybrid_model_results"
 
 print("Checking directory access:")
 # print(f"  {PROCESSED_DATA_DIR!s} exists: {PROCESSED_DATA_DIR.exists()}")
@@ -147,12 +146,13 @@ class HybridSleepDataset(Dataset):
             c22_list.append(feats)
             lbl_list.append(labels.astype(np.int64))
 
-        # self.sequences   = torch.from_numpy(np.concatenate(seq_list,axis=0))
-        # self.c22_feats   = torch.from_numpy(np.concatenate(c22_list,axis=0))
-        # self.seq_labels  = torch.from_numpy(np.concatenate(lbl_list,axis=0))
-        self.raw    = torch.from_numpy(np.stack(seqs,   axis=0))  # (N_segments, S, 2, T)
-        self.c22    = torch.from_numpy(np.stack(c22s,   axis=0))  # (N_segments, S, feat_dim)
-        self.labels = torch.from_numpy(np.stack(labels, axis=0))  # (N_segments, S)
+        self.sequences   = torch.from_numpy(np.concatenate(seq_list,axis=0))
+        self.c22_feats   = torch.from_numpy(np.concatenate(c22_list,axis=0))
+        self.seq_labels  = torch.from_numpy(np.concatenate(lbl_list,axis=0))
+        # self.raw    = torch.from_numpy(np.stack(seqs,   axis=0))  # (N_segments, S, 2, T)
+        # # self.c22_feats = torch.from_numpy(np.concatenate(c22_list, axis=0))
+        # self.c22    = torch.from_numpy(np.stack(c22_list,   axis=0))  # (N_segments, S, feat_dim)
+        # self.labels = torch.from_numpy(np.stack(labels, axis=0))  # (N_segments, S)
 
 
     def __len__(self):
