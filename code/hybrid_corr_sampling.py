@@ -30,6 +30,11 @@ PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
 CATCH22_DATA_DIR   = BASE/"c22_processed_sleepedf"
 RESULTS_DIR        = BASE/"hybrid_model_results"
 
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+for sub in ["plots", "models", "metrics"]:
+    (RESULTS_DIR/sub).mkdir(parents=True, exist_ok=True)
+    print(f"Created directory: {RESULTS_DIR/sub}")
+
 print("Checking directory access:")
 # print(f"  {PROCESSED_DATA_DIR!s} exists: {PROCESSED_DATA_DIR.exists()}")
 # print(f"  {CATCH22_DATA_DIR!s} exists: {CATCH22_DATA_DIR.exists()}")
