@@ -13,19 +13,19 @@ id_pat = re.compile(r'^(SC|ST)\d{4}[A-Z]\d')
 
 # collect raw IDs
 raw_files = os.listdir(PROCESSED_DATA_DIR)
-raw_ids = {
-    m.group(0)
-    for f in raw_files
-    if (m := id_pat.match(f))
-}
+raw_ids = set()
+for f in raw_files:
+    m = id_pat.match(f)
+    if m:
+        raw_ids.add(m.group(0))
 
 # collect catch22 IDs
 c22_files = os.listdir(CATCH22_DATA_DIR)
-c22_ids = {
-    m.group(0)
-    for f in c22_files
-    if (m := id_pat.match(f))
-}
+c22_ids = set()
+for f in c22_files:
+    m = id_pat.match(f)
+    if m:
+        c22_ids.add(m.group(0))
 
 print(f"{len(raw_ids)} raw IDs:", sorted(raw_ids))
 print(f"{len(c22_ids)} catch-22 IDs:", sorted(c22_ids))
