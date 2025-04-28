@@ -23,19 +23,19 @@ from sklearn.preprocessing import label_binarize
 import matplotlib.pyplot as plt
 
 # ─── Argument parsing ────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser()
-parser.add_argument("--data-root",    type=Path, required=True)
-parser.add_argument("--results-root", type=Path, required=True)
-parser.add_argument("--figures-root", type=Path, required=True)
-parser.add_argument("--n-jobs",       type=int,   default=16)
-parser.add_argument("--batch-size",   type=int,   default=32)
-parser.add_argument("--epochs",       type=int,   default=50)
-parser.add_argument("--lr",           type=float, default=2e-4)
-parser.add_argument("--seq-length",   type=int,   default=30)
-parser.add_argument("--seq-stride",   type=int,   default=5)
-parser.add_argument("--grid-search",  action="store_true",
-    help="Run full grid-search over hyperparameters")
-args = parser.parse_args()
+# parser = argparse.ArgumentParser()
+# parser.add_argument("--data-root",    type=Path, required=True)
+# parser.add_argument("--results-root", type=Path, required=True)
+# parser.add_argument("--figures-root", type=Path, required=True)
+# parser.add_argument("--n-jobs",       type=int,   default=16)
+# parser.add_argument("--batch-size",   type=int,   default=32)
+# parser.add_argument("--epochs",       type=int,   default=50)
+# parser.add_argument("--lr",           type=float, default=2e-4)
+# parser.add_argument("--seq-length",   type=int,   default=30)
+# parser.add_argument("--seq-stride",   type=int,   default=5)
+# parser.add_argument("--grid-search",  action="store_true",
+#     help="Run full grid-search over hyperparameters")
+# args = parser.parse_args()
 
 # ─── Logging setup ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
@@ -51,12 +51,25 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # ─── Paths ──────────────────────────────────────────────────────────────────────
-BASE               = args.data_root
-PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
-CATCH22_DATA_DIR   = BASE/"c22_processed_sleepedf"
-PSD_DATA_DIR       = BASE/"psd_features_sleepedf"
-RESULTS_DIR        = args.results_root
-FIGURES_DIR        = args.figures_root
+# BASE               = args.data_root
+# PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
+# CATCH22_DATA_DIR   = BASE/"c22_processed_sleepedf"
+# PSD_DATA_DIR       = BASE/"psd_features_sleepedf"
+# RESULTS_DIR        = args.results_root
+# FIGURES_DIR        = args.figures_root
+
+HOME = Path("/mnt/sauce/littlab/users/kimliang")
+# HOME = os.environ.get("HOME", ".")
+# PROJECT = HOME / 'Documents/STAT4830' / "STAT-4830-GOALZ-project"
+PROJECT = HOME / 'sleep' / "STAT-4830-GOALZ-project"
+BASE = PROJECT / "data"
+print("Project base:", PROJECT)
+
+PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
+CATCH22_DATA_DIR   = BASE / "c22_processed_sleepedf"
+RESULTS_DIR        = BASE / "hybrid_psd_model_results"
+FIGURES_DIR        = BASE / "hybrid_psd_model_figures"
+PSD_DATA_DIR       = BASE / "features_psd_sleep_edf"
 
 # make sure subdirs exist
 (RESULTS_DIR/"grid_search").mkdir(parents=True, exist_ok=True)

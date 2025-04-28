@@ -1,0 +1,8 @@
+2025-04-28 18:30:30,485 INFO Using device: cpu
+2025-04-28 18:30:30,485 INFO /Users/kimberly/Documents/STAT4830/sleep_staging/data/processed_sleepedf: exists = False
+2025-04-28 18:30:30,485 INFO /Users/kimberly/Documents/STAT4830/sleep_staging/data/c22_processed_sleepedf: exists = False
+2025-04-28 18:30:30,485 INFO /Users/kimberly/Documents/STAT4830/sleep_staging/data/psd_features_sleepedf: exists = False
+2025-04-28 18:31:05,936 INFO Using device: cpu
+2025-04-28 18:31:05,936 INFO /Users/kimberly/Documents/STAT4830/processed_data/processed_sleepedf: exists = False
+2025-04-28 18:31:05,936 INFO /Users/kimberly/Documents/STAT4830/processed_data/c22_processed_sleepedf: exists = False
+2025-04-28 18:31:05,936 INFO /Users/kimberly/Documents/STAT4830/processed_data/psd_features_sleepedf: exists = False
