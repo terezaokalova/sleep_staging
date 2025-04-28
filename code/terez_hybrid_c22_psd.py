@@ -113,7 +113,7 @@ class HybridSleepDataset(Dataset):
             seqs, labels = dat["sequences"], dat["seq_labels"]
             feats_c22    = pd.read_csv(self.c22_map[rid]).drop(columns=["label"]).values
             npz_data     = np.load(self.psd_map[rid])
-            feats_psd    = npz_data["features"]  # correct key
+            feats_psd    = npz_data["features"]
 
             for feats, store in ((feats_c22, c22_list), (feats_psd, psd_list)):
                 n_seq, D = seqs.shape[0], feats.shape[1]
@@ -298,8 +298,8 @@ class HybridSleepTransformer(nn.Module):
 def focal_loss(inputs, targets,
                alpha_general=0.25, alpha_n1=0.9, gamma=2.5):
     B,S,C   = inputs.shape
-    logits  = inputs.view(-1, C)
-    tgt     = targets.view(-1)
+    logits  = inputs.reshape(-1, C)
+    tgt     = targets.reshape(-1)
     logp    = F.log_softmax(logits, dim=1)
     p       = torch.exp(logp).clamp(min=1e-7)
     ce      = F.nll_loss(logp, tgt, reduction='none')
@@ -322,7 +322,7 @@ def train_epoch(model, loader, optimizer, scheduler=None, mixup_alpha=0.2):
     model.train()
     running_loss, correct, total = 0.0, 0, 0
     for raw, c22, psd, labels in loader:
-        raw    = torch.nan_to_num(raw).to(device, non_blocking=True)
+        raw    = torch.nan_to_num(raw).to(device, non_blocking=True)   
         c22    = torch.nan_to_num(c22).to(device, non_blocking=True)
         psd    = torch.nan_to_num(psd).to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
@@ -407,7 +407,7 @@ def main():
                                       PSD_DATA_DIR,
                                       test_ids)
 
-        flat_lbl = train_ds.seq_labels.view(-1).numpy()
+        flat_lbl = train_ds.seq_labels.reshape(-1).numpy()
         counts   = np.bincount(flat_lbl, minlength=5)
         weights  = 1.0 / np.sqrt(counts + 1e-6)
         weights[1] *= 1.5
@@ -454,8 +454,8 @@ def main():
             )
             vl_probs, vl_lbls = eval_epoch_probs(model, test_loader)
             vl_loss = focal_loss(
-                torch.from_numpy(vl_probs).to(device).view(-1,5),
-                torch.from_numpy(vl_lbls).to(device).view(-1)
+                torch.from_numpy(vl_probs).to(device).reshape(-1,5),
+                torch.from_numpy(vl_lbls).to(device).reshape(-1)
             )
             train_losses.append(tr_loss)
             val_losses.append(vl_loss.item())
@@ -491,7 +491,7 @@ def main():
     plt.xticks(range(5), ["W","N1","N2","N3","REM"])
     plt.yticks(range(5), ["W","N1","N2","N3","REM"])
     plt.xlabel("Predicted"); plt.ylabel("True")
-    plt.title("Cross‐Val Confusion Matrix")
+    plt.title("Cross-Val Confusion Matrix")
     plt.savefig(FIGURES_DIR/"confusion_matrix.png")
     plt.clf()
 
