@@ -37,6 +37,23 @@ import matplotlib.pyplot as plt
 #     help="Run full grid-search over hyperparameters")
 # args = parser.parse_args()
 
+
+# ─── Manual Args ────────────────────────────────────────────────────────────────
+class Args:
+    pass
+
+args = Args()
+args.data_root    = Path("/mnt/sauce/littlab/users/kimliang/sleep/STAT-4830-GOALZ-project/data")
+args.results_root = Path("/mnt/sauce/littlab/users/kimliang/sleep/STAT-4830-GOALZ-project/results")
+args.figures_root = Path("/mnt/sauce/littlab/users/kimliang/sleep/STAT-4830-GOALZ-project/figures")
+args.n_jobs       = 16
+args.batch_size   = 32
+args.epochs       = 50
+args.lr           = 2e-4
+args.seq_length   = 30
+args.seq_stride   = 5
+args.grid_search  = True
+
 # ─── Logging setup ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
 LOGFILE    = SCRIPT_DIR/"terez_hybrid_c22_psd.log"
