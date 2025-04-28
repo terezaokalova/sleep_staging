@@ -1,9 +1,5 @@
 results/models/*.pkl
-results/models/*.pkl
 
-# ignore RandomForest metric & plot files
-/results/metrics/RandomForest*
-/results/plots/RandomForest*
 # ignore RandomForest metric & plot files
 /results/metrics/RandomForest*
 /results/plots/RandomForest*
