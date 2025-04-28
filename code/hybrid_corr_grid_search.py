@@ -16,6 +16,7 @@ HOME = Path(os.environ.get("HOME", "."))
 # PROJECT = HOME / 'Documents/STAT4830' / "STAT-4830-GOALZ-project"
 PROJECT = HOME / 'sleep' / "STAT-4830-GOALZ-project"
 BASE = PROJECT / "data"
+print("Project base:", PROJECT)
 
 PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
 CATCH22_DATA_DIR   = BASE / "c22_processed_sleepedf"
