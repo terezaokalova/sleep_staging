@@ -12,7 +12,8 @@ from sklearn.metrics import classification_report, confusion_matrix
 # -------------------------
 # ==== Initialization ==== 
 # -------------------------
-HOME = Path(os.environ.get("HOME", "."))
+# HOME = Path(os.environ.get("HOME", "."))
+HOME = Path("/mnt/sauce/littlab/users/kimliang")
 # PROJECT = HOME / 'Documents/STAT4830' / "STAT-4830-GOALZ-project"
 PROJECT = HOME / 'sleep' / "STAT-4830-GOALZ-project"
 BASE = PROJECT / "data"
