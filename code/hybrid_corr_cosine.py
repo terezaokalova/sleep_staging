@@ -762,7 +762,7 @@ def main():
     all_fold_confusion = np.zeros((5, 5))  # 5 classes x 5 classes
     all_fold_f1 = np.zeros((5, 5))  # 5 folds x 5 classes
     
-    for k in range(5):
+    for k in range(1):
         print(f"\n=== Starting Fold {k+1}/5 ===")
         test_subs = folds[k]
         train_subs = [s for i, f in enumerate(folds) if i!=k for s in f]
