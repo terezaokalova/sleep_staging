@@ -69,12 +69,12 @@ torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark     = True
 
-BATCH_SIZE  = args.batch_size
-NUM_EPOCHS  = args.epochs
+BATCH_SIZE    = args.batch_size
+NUM_EPOCHS    = args.epochs
 LEARNING_RATE = args.lr
-SEQ_LENGTH  = args.seq_length
-SEQ_STRIDE  = args.seq_stride
-NUM_WORKERS = args.n_jobs
+SEQ_LENGTH    = args.seq_length
+SEQ_STRIDE    = args.seq_stride
+NUM_WORKERS   = args.n_jobs
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -101,18 +101,19 @@ class HybridSleepDataset(Dataset):
             psd_files = [p for p in psd_files if any(r in p for r in recording_ids)]
         self.raw_map = {Path(p).stem.split("_")[0]: p for p in raw_files}
         self.c22_map = {Path(p).stem.split("_")[0]: p for p in c22_files}
-        self.psd_map= {Path(p).stem.split("_")[0]: p for p in psd_files}
-        common = sorted(set(self.raw_map)&set(self.c22_map)&set(self.psd_map))
+        self.psd_map = {Path(p).stem.split("_")[0]: p for p in psd_files}
+        common = sorted(set(self.raw_map) & set(self.c22_map) & set(self.psd_map))
         if not common:
             raise ValueError("No overlapping recordings!")
         self.recording_ids = common
 
         seq_list, c22_list, psd_list, lbl_list = [], [], [], []
         for rid in common:
-            dat         = np.load(self.raw_map[rid])
+            dat          = np.load(self.raw_map[rid])
             seqs, labels = dat["sequences"], dat["seq_labels"]
-            feats_c22   = pd.read_csv(self.c22_map[rid]).drop(columns=["label"]).values
-            feats_psd   = np.load(self.psd_map[rid])["psd_features"]
+            feats_c22    = pd.read_csv(self.c22_map[rid]).drop(columns=["label"]).values
+            npz_data     = np.load(self.psd_map[rid])
+            feats_psd    = npz_data["features"]  # correct key
 
             for feats, store in ((feats_c22, c22_list), (feats_psd, psd_list)):
                 n_seq, D = seqs.shape[0], feats.shape[1]
@@ -135,10 +136,10 @@ class HybridSleepDataset(Dataset):
             seq_list.append(seqs.astype(np.float32))
             lbl_list.append(labels.astype(np.int64))
 
-        self.sequences  = torch.from_numpy(np.concatenate(seq_list,axis=0))
-        self.c22_feats  = torch.from_numpy(np.concatenate(c22_list,axis=0))
-        self.psd_feats  = torch.from_numpy(np.concatenate(psd_list,axis=0))
-        self.seq_labels = torch.from_numpy(np.concatenate(lbl_list,axis=0))
+        self.sequences  = torch.from_numpy(np.concatenate(seq_list, axis=0))
+        self.c22_feats  = torch.from_numpy(np.concatenate(c22_list, axis=0))
+        self.psd_feats  = torch.from_numpy(np.concatenate(psd_list, axis=0))
+        self.seq_labels = torch.from_numpy(np.concatenate(lbl_list, axis=0))
 
     def __len__(self):
         return len(self.sequences)
@@ -155,9 +156,9 @@ class HybridSleepDataset(Dataset):
 class EpochEncoder(nn.Module):
     def __init__(self, emb=128):
         super().__init__()
-        self.conv1 = nn.Conv1d(2,32,3,padding=1); self.bn1=nn.BatchNorm1d(32)
+        self.conv1 = nn.Conv1d(2,32,3,padding=1);  self.bn1=nn.BatchNorm1d(32)
         self.conv2 = nn.Conv1d(32,64,3,padding=1); self.bn2=nn.BatchNorm1d(64)
-        self.conv3 = nn.Conv1d(64,128,3,padding=1); self.bn3=nn.BatchNorm1d(128)
+        self.conv3 = nn.Conv1d(64,128,3,padding=1);self.bn3=nn.BatchNorm1d(128)
         self.conv4 = nn.Conv1d(128,128,3,padding=1);self.bn4=nn.BatchNorm1d(128)
         self.pool  = nn.MaxPool1d(2)
         self.attn  = nn.Sequential(
@@ -173,7 +174,9 @@ class EpochEncoder(nn.Module):
     def forward(self, x):
         B,S,C,T = x.shape
         x = x.view(B*S, C, T)
-        for conv,bn in ((self.conv1,self.bn1),(self.conv2,self.bn2),(self.conv3,self.bn3)):
+        for conv,bn in ((self.conv1,self.bn1),
+                        (self.conv2,self.bn2),
+                        (self.conv3,self.bn3)):
             x = F.relu(bn(conv(x))); x = self.pool(x)
         x = F.relu(self.bn4(self.conv4(x)))
         x = x * self.attn(x)
@@ -219,60 +222,70 @@ class HybridSleepTransformer(nn.Module):
                  num_classes=5, num_layers=3, num_heads=8,
                  dropout=0.2, seq_length=SEQ_LENGTH):
         super().__init__()
-        self.epoch_enc = EpochEncoder(raw_emb)
-        self.c22_enc   = C22Encoder(c22_dim, c22_emb)
-        self.psd_enc   = PSDEncoder(psd_dim, psd_emb)
+        self.epoch_enc    = EpochEncoder(raw_emb)
+        self.c22_enc      = C22Encoder(c22_dim, c22_emb)
+        self.psd_enc      = PSDEncoder(psd_dim, psd_emb)
         self.combined_dim = raw_emb + c22_emb + psd_emb
+
         self.fusion   = nn.Sequential(
-            nn.Linear(self.combined_dim,self.combined_dim),
+            nn.Linear(self.combined_dim, self.combined_dim),
             nn.LayerNorm(self.combined_dim),
             nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(self.combined_dim,self.combined_dim)
+            nn.Linear(self.combined_dim, self.combined_dim)
         )
         self.ln_fuse  = nn.LayerNorm(self.combined_dim)
         self.pos_enc  = nn.Parameter(torch.randn(1, seq_length, self.combined_dim))
         self.cls_tok  = nn.Parameter(torch.randn(1, num_classes, self.combined_dim))
+
         enc_layer     = nn.TransformerEncoderLayer(
             d_model=self.combined_dim, nhead=num_heads,
             dim_feedforward=8*self.combined_dim,
             dropout=dropout, batch_first=True
         )
         self.transformer = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
-        self.aux_raw  = nn.Sequential(
+
+        self.aux_raw = nn.Sequential(
             nn.Linear(raw_emb,128), nn.LayerNorm(128),
             nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(128,num_classes)
         )
-        self.aux_c22  = nn.Sequential(
+        self.aux_c22 = nn.Sequential(
             nn.Linear(c22_emb,128), nn.LayerNorm(128),
             nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(128,num_classes)
         )
-        self.aux_psd  = nn.Sequential(
+        self.aux_psd = nn.Sequential(
             nn.Linear(psd_emb,128), nn.LayerNorm(128),
             nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(128,num_classes)
         )
-        self.fc_shared = nn.Linear(self.combined_dim,256)
-        self.ln_shared = nn.LayerNorm(256)
-        self.drop      = nn.Dropout(dropout)
-        self.fc_classes= nn.ModuleList([nn.Linear(256,1) for _ in range(num_classes)])
+
+        self.fc_shared  = nn.Linear(self.combined_dim,256)
+        self.ln_shared  = nn.LayerNorm(256)
+        self.drop       = nn.Dropout(dropout)
+        self.fc_classes = nn.ModuleList([nn.Linear(256,1) for _ in range(num_classes)])
+
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None: nn.init.constant_(m.bias,0)
+                if m.bias is not None: nn.init.constant_(m.bias, 0)
 
     def forward(self, raw, c22, psd):
         r = self.epoch_enc(raw)
         c = self.c22_enc(c22)
         p = self.psd_enc(psd)
         B,S,_ = r.shape
+
         if c.size(1)!=S or p.size(1)!=S:
             Smin = min(r.size(1), c.size(1), p.size(1))
             r, c, p = r[:,:Smin], c[:,:Smin], p[:,:Smin]
             S = Smin
-        ar = self.aux_raw(r); ac = self.aux_c22(c); ap = self.aux_psd(p)
-        x = torch.cat([r,c,p], dim=2).view(B*S, -1)
+
+        ar = self.aux_raw(r)
+        ac = self.aux_c22(c)
+        ap = self.aux_psd(p)
+
+        x = torch.cat([r, c, p], dim=2).view(B*S, -1)
         x = self.fusion(x); x = F.relu(self.ln_fuse(x))
         x = x.view(B, S, -1) + self.pos_enc[:,:S]
         ct = self.cls_tok.expand(B, -1, -1)
@@ -284,15 +297,15 @@ class HybridSleepTransformer(nn.Module):
 # ─── Loss & Helpers ────────────────────────────────────────────────────────────
 def focal_loss(inputs, targets,
                alpha_general=0.25, alpha_n1=0.9, gamma=2.5):
-    B,S,C = inputs.shape
-    logits = inputs.view(-1, C)
-    tgt    = targets.view(-1)
-    logp   = F.log_softmax(logits, dim=1)
-    p      = torch.exp(logp).clamp(min=1e-7)
-    ce     = F.nll_loss(logp, tgt, reduction='none')
-    pt     = p.gather(1, tgt.unsqueeze(1)).squeeze(1)
-    n1 = (tgt==1).float(); n3=(tgt==3).float(); rem=(tgt==4).float()
-    alpha = alpha_general*(1-n1-n3-rem) + alpha_n1*n1 + 0.5*n3 + 0.45*rem
+    B,S,C   = inputs.shape
+    logits  = inputs.view(-1, C)
+    tgt     = targets.view(-1)
+    logp    = F.log_softmax(logits, dim=1)
+    p       = torch.exp(logp).clamp(min=1e-7)
+    ce      = F.nll_loss(logp, tgt, reduction='none')
+    pt      = p.gather(1, tgt.unsqueeze(1)).squeeze(1)
+    n1      = (tgt==1).float(); n3=(tgt==3).float(); rem=(tgt==4).float()
+    alpha   = alpha_general*(1-n1-n3-rem) + alpha_n1*n1 + 0.5*n3 + 0.45*rem
     return (alpha * ((1-pt)**gamma) * ce).mean()
 
 def mixup_batch(raw, c22, psd, labels, alpha=0.2):
@@ -307,51 +320,61 @@ def mixup_batch(raw, c22, psd, labels, alpha=0.2):
 
 def train_epoch(model, loader, optimizer, scheduler=None, mixup_alpha=0.2):
     model.train()
-    running_loss=0; correct=0; total=0
-    for raw,c22,psd,labels in loader:
-        raw = torch.nan_to_num(raw).to(device, non_blocking=True)
-        c22 = torch.nan_to_num(c22).to(device, non_blocking=True)
-        psd = torch.nan_to_num(psd).to(device, non_blocking=True)
+    running_loss, correct, total = 0.0, 0, 0
+    for raw, c22, psd, labels in loader:
+        raw    = torch.nan_to_num(raw).to(device, non_blocking=True)
+        c22    = torch.nan_to_num(c22).to(device, non_blocking=True)
+        psd    = torch.nan_to_num(psd).to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        if np.random.rand()<0.5:
-            r,c,p,la,lb,lam = mixup_batch(raw, c22, psd, labels, mixup_alpha)
-            use_mixup=True
+
+        if np.random.rand() < 0.5:
+            r, c_, p, la, lb, lam = mixup_batch(raw, c22, psd, labels, mixup_alpha)
+            use_mixup = True
         else:
-            r,c,p = raw, c22, psd; la=labels; use_mixup=False
+            r, c_, p = raw, c22, psd
+            la = labels
+            use_mixup = False
+
         optimizer.zero_grad()
-        main, ar, ac, ap = model(r, c, p)
+        main, ar, ac, ap = model(r, c_, p)
         main_loss = focal_loss(main, la)
+
         if use_mixup:
             lr = lam*focal_loss(ar, la) + (1-lam)*focal_loss(ar, lb)
             lc = lam*focal_loss(ac, la) + (1-lam)*focal_loss(ac, lb)
             lp = lam*focal_loss(ap, la) + (1-lam)*focal_loss(ap, lb)
         else:
-            lr = focal_loss(ar, la); lc = focal_loss(ac, la); lp = focal_loss(ap, la)
+            lr = focal_loss(ar, la)
+            lc = focal_loss(ac, la)
+            lp = focal_loss(ap, la)
+
         loss = main_loss + 0.3*(lr + lc + lp)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        if scheduler is not None and isinstance(scheduler, (
-            optim.lr_scheduler.OneCycleLR, optim.lr_scheduler.CyclicLR
-        )):
+
+        if scheduler is not None and isinstance(scheduler, (optim.lr_scheduler.OneCycleLR, optim.lr_scheduler.CyclicLR)):
             scheduler.step()
+
         running_loss += loss.item() * raw.size(0)
         preds = main.argmax(dim=-1)
         if not use_mixup:
             correct += (preds == labels).sum().item()
             total += labels.numel()
-    return running_loss / len(loader.dataset), correct / total if total>0 else 0
+
+    return running_loss / len(loader.dataset), correct / total if total > 0 else 0.0
 
 def eval_epoch_probs(model, loader):
     model.eval()
     probs_list, labels_list = [], []
     with torch.no_grad():
-        for raw,c22,psd,labels in loader:
-            raw = raw.to(device); c22 = c22.to(device); psd = psd.to(device)
+        for raw, c22, psd, labels in loader:
+            raw, c22, psd = raw.to(device), c22.to(device), psd.to(device)
             logits = model(raw, c22, psd)[0]
-            probs = F.softmax(logits, dim=-1).cpu().numpy().reshape(-1,5)
-            labs  = labels.cpu().numpy().reshape(-1)
-            probs_list.append(probs); labels_list.append(labs)
+            probs  = F.softmax(logits, dim=-1).cpu().numpy().reshape(-1, 5)
+            labs   = labels.cpu().numpy().reshape(-1)
+            probs_list.append(probs)
+            labels_list.append(labs)
     return np.concatenate(probs_list, axis=0), np.concatenate(labels_list, axis=0)
 
 # ─── Main ───────────────────────────────────────────────────────────────────────
@@ -360,15 +383,17 @@ def main():
     for f in glob.glob(str(PROCESSED_DATA_DIR/"*_sequences.npz")):
         rid = Path(f).stem.split("_")[0]
         subj_map.setdefault(get_true_subject_id(rid), []).append(rid)
+
     subjects = list(subj_map.keys())
-    np.random.seed(SEED); np.random.shuffle(subjects)
+    np.random.seed(SEED)
+    np.random.shuffle(subjects)
     folds = np.array_split(subjects, 5)
 
     all_conf = np.zeros((5,5), dtype=int)
     all_probs, all_lbls = [], []
 
     for k in range(5):
-        train_subs = [s for i,f in enumerate(folds) if i!=k for s in f]
+        train_subs = [s for i, f in enumerate(folds) if i != k for s in f]
         test_subs  = folds[k]
         train_ids  = [rid for s in train_subs for rid in subj_map[s]]
         test_ids   = [rid for s in test_subs  for rid in subj_map[s]]
@@ -384,39 +409,60 @@ def main():
 
         flat_lbl = train_ds.seq_labels.view(-1).numpy()
         counts   = np.bincount(flat_lbl, minlength=5)
-        weights  = 1.0/np.sqrt(counts+1e-6); weights[1]*=1.5
-        seq_w    = np.array([weights[train_ds.seq_labels[i].numpy()].mean()
-                             for i in range(len(train_ds))])
+        weights  = 1.0 / np.sqrt(counts + 1e-6)
+        weights[1] *= 1.5
+        seq_w    = np.array([
+            weights[train_ds.seq_labels[i].numpy()].mean()
+            for i in range(len(train_ds))
+        ])
         sampler  = WeightedRandomSampler(seq_w, len(seq_w), replacement=True)
 
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
-                                  sampler=sampler, num_workers=NUM_WORKERS,
-                                  pin_memory=True)
-        test_loader  = DataLoader(test_ds, batch_size=BATCH_SIZE,
-                                  shuffle=False, num_workers=NUM_WORKERS,
-                                  pin_memory=True)
+        train_loader = DataLoader(
+            train_ds, batch_size=BATCH_SIZE,
+            sampler=sampler,
+            num_workers=NUM_WORKERS,
+            pin_memory=True
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=BATCH_SIZE,
+            shuffle=False,
+            num_workers=NUM_WORKERS,
+            pin_memory=True
+        )
 
         c22_dim = train_ds.c22_feats.shape[-1]
         psd_dim = train_ds.psd_feats.shape[-1]
         model   = HybridSleepTransformer(c22_dim, psd_dim).to(device)
 
-        optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+        optimizer = optim.AdamW(model.parameters(),
+                                lr=LEARNING_RATE,
+                                weight_decay=1e-4)
         scheduler = optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=LEARNING_RATE,
-            epochs=NUM_EPOCHS, steps_per_epoch=len(train_loader),
-            pct_start=0.3, div_factor=25, final_div_factor=1000
+            optimizer,
+            max_lr=LEARNING_RATE,
+            epochs=NUM_EPOCHS,
+            steps_per_epoch=len(train_loader),
+            pct_start=0.3,
+            div_factor=25,
+            final_div_factor=1000
         )
 
         train_losses, val_losses = [], []
         for ep in range(NUM_EPOCHS):
-            tr_loss, tr_acc = train_epoch(model, train_loader, optimizer, scheduler)
-            vl_probs, vl_lbls  = eval_epoch_probs(model, test_loader)
-            vl_loss = focal_loss(torch.from_numpy(vl_probs).to(device).view(-1,5),
-                                 torch.from_numpy(vl_lbls).to(device).view(-1))
+            tr_loss, tr_acc = train_epoch(
+                model, train_loader, optimizer, scheduler
+            )
+            vl_probs, vl_lbls = eval_epoch_probs(model, test_loader)
+            vl_loss = focal_loss(
+                torch.from_numpy(vl_probs).to(device).view(-1,5),
+                torch.from_numpy(vl_lbls).to(device).view(-1)
+            )
             train_losses.append(tr_loss)
             val_losses.append(vl_loss.item())
-            logger.info(f"Fold {k+1} Epoch {ep+1}/{NUM_EPOCHS} "
-                        f"train_loss={tr_loss:.4f} val_loss={vl_loss:.4f}")
+            logger.info(
+                f"Fold {k+1} Epoch {ep+1}/{NUM_EPOCHS}"
+                f" train_loss={tr_loss:.4f} val_loss={vl_loss:.4f}"
+            )
 
         # convergence plot
         plt.plot(train_losses, label="Train Loss")
@@ -439,13 +485,13 @@ def main():
                                     target_names=["W","N1","N2","N3","REM"])
         logger.info(f"\nFold {k+1} classification report:\n{rep}")
 
-    # confusion matrix (all folds)
+    # overall confusion matrix
     plt.matshow(all_conf)
     plt.colorbar()
     plt.xticks(range(5), ["W","N1","N2","N3","REM"])
     plt.yticks(range(5), ["W","N1","N2","N3","REM"])
     plt.xlabel("Predicted"); plt.ylabel("True")
-    plt.title("Cross-Val Confusion Matrix")
+    plt.title("Cross‐Val Confusion Matrix")
     plt.savefig(FIGURES_DIR/"confusion_matrix.png")
     plt.clf()
 
@@ -453,7 +499,7 @@ def main():
     all_probs_arr = np.concatenate(all_probs, axis=0)
     all_lbls_arr  = np.concatenate(all_lbls,  axis=0)
     bin_lbls      = label_binarize(all_lbls_arr, classes=[0,1,2,3,4])
-    for i,cls in enumerate(["W","N1","N2","N3","REM"]):
+    for i, cls in enumerate(["W","N1","N2","N3","REM"]):
         fpr, tpr, _ = roc_curve(bin_lbls[:,i], all_probs_arr[:,i])
         roc_auc     = auc(fpr, tpr)
         plt.plot(fpr, tpr, label=f"{cls} (AUC={roc_auc:.2f})")
