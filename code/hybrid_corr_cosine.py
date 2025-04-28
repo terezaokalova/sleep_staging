@@ -20,7 +20,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 # -------------------------
 
 from pathlib import Path
-BASE = Path(os.environ["HOME"]/"sleep/STAT-4830-GOALZ-project/data")
+BASE = Path(os.environ["HOME"]) /"sleep/STAT-4830-GOALZ-project/data"
 print(BASE)
 
 PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
