@@ -3,6 +3,7 @@ import os
 import sys
 import glob
 import logging
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -17,9 +18,26 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve, 
 from sklearn.preprocessing import label_binarize
 import matplotlib.pyplot as plt
 
+# ─── Argument parsing ────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser()
+parser.add_argument("--data-root",    type=Path, required=True,
+                    help="Base folder for processed_sleepedf, c22_processed_sleepedf, psd_features_sleepedf")
+parser.add_argument("--results-root", type=Path, required=True,
+                    help="Where to write hybrid_model_results")
+parser.add_argument("--figures-root", type=Path, required=True,
+                    help="Where to save figures")
+parser.add_argument("--n-jobs",       type=int, default=16,
+                    help="num_workers for DataLoader")
+parser.add_argument("--batch-size",   type=int, default=32)
+parser.add_argument("--epochs",       type=int, default=50)
+parser.add_argument("--lr",           type=float, default=2e-4)
+parser.add_argument("--seq-length",   type=int, default=30)
+parser.add_argument("--seq-stride",   type=int, default=5)
+args = parser.parse_args()
+
 # ─── Logging setup ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent
-LOGFILE    = SCRIPT_DIR / "terez_hybrid_c22_psd.log"
+LOGFILE    = SCRIPT_DIR/"terez_hybrid_c22_psd.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -31,34 +49,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── Paths ──────────────────────────────────────────────────────────────────────
-BASE               = Path(os.environ.get(
-    "DATA_BASE",
-    "/mnt/sauce/littlab/users/okalova/sleep/STAT-4830-GOALZ-project/data"
-))
-PROCESSED_DATA_DIR = BASE / "processed_sleepedf"
-CATCH22_DATA_DIR   = BASE / "c22_processed_sleepedf"
-PSD_DATA_DIR       = BASE / "psd_features_sleepedf"
-RESULTS_DIR        = BASE / "hybrid_model_results"
-FIGURES_DIR        = Path("/mnt/sauce/littlab/users/okalova/sleep/sleep_staging/figures")
+BASE               = args.data_root
+PROCESSED_DATA_DIR = BASE/"processed_sleepedf"
+CATCH22_DATA_DIR   = BASE/"c22_processed_sleepedf"
+PSD_DATA_DIR       = BASE/"psd_features_sleepedf"
+RESULTS_DIR        = args.results_root
+FIGURES_DIR        = args.figures_root
 
 for d in (RESULTS_DIR, FIGURES_DIR):
     d.mkdir(parents=True, exist_ok=True)
-for sub in ("plots", "models", "metrics"):
-    (RESULTS_DIR / sub).mkdir(parents=True, exist_ok=True)
+for sub in ("plots","models","metrics"):
+    (RESULTS_DIR/sub).mkdir(parents=True, exist_ok=True)
 
-# ─── Hyperparameters & Seed ────────────────────────────────────────────────────
-SEED = 42
+# ─── Hyperparameters & seed ─────────────────────────────────────────────────────
+SEED           = 42
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark     = True
 
-BATCH_SIZE    = 32
-NUM_EPOCHS    = 50
-LEARNING_RATE = 2e-4
-SEQ_LENGTH    = 30
-SEQ_STRIDE    = 5
+BATCH_SIZE  = args.batch_size
+NUM_EPOCHS  = args.epochs
+LEARNING_RATE = args.lr
+SEQ_LENGTH  = args.seq_length
+SEQ_STRIDE  = args.seq_stride
+NUM_WORKERS = args.n_jobs
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -68,10 +84,10 @@ for d in (PROCESSED_DATA_DIR, CATCH22_DATA_DIR, PSD_DATA_DIR):
 if not (PROCESSED_DATA_DIR.exists() and CATCH22_DATA_DIR.exists() and PSD_DATA_DIR.exists()):
     sys.exit("ERROR: Missing one or more data directories")
 
-# ─── Utilities ──────────────────────────────────────────────────────────────────
+# ─── Utility ────────────────────────────────────────────────────────────────────
 def get_true_subject_id(filename):
     b = Path(filename).stem
-    return b[:5] if b.startswith(("SC4", "ST7")) else b[:6]
+    return b[:5] if b.startswith(("SC4","ST7")) else b[:6]
 
 # ─── Dataset ───────────────────────────────────────────────────────────────────
 class HybridSleepDataset(Dataset):
@@ -85,18 +101,18 @@ class HybridSleepDataset(Dataset):
             psd_files = [p for p in psd_files if any(r in p for r in recording_ids)]
         self.raw_map = {Path(p).stem.split("_")[0]: p for p in raw_files}
         self.c22_map = {Path(p).stem.split("_")[0]: p for p in c22_files}
-        self.psd_map = {Path(p).stem.split("_")[0]: p for p in psd_files}
-        common = sorted(set(self.raw_map) & set(self.c22_map) & set(self.psd_map))
+        self.psd_map= {Path(p).stem.split("_")[0]: p for p in psd_files}
+        common = sorted(set(self.raw_map)&set(self.c22_map)&set(self.psd_map))
         if not common:
             raise ValueError("No overlapping recordings!")
         self.recording_ids = common
 
         seq_list, c22_list, psd_list, lbl_list = [], [], [], []
         for rid in common:
-            dat        = np.load(self.raw_map[rid])
+            dat         = np.load(self.raw_map[rid])
             seqs, labels = dat["sequences"], dat["seq_labels"]
-            feats_c22  = pd.read_csv(self.c22_map[rid]).drop(columns=["label"]).values
-            feats_psd  = np.load(self.psd_map[rid])["psd_features"]
+            feats_c22   = pd.read_csv(self.c22_map[rid]).drop(columns=["label"]).values
+            feats_psd   = np.load(self.psd_map[rid])["psd_features"]
 
             for feats, store in ((feats_c22, c22_list), (feats_psd, psd_list)):
                 n_seq, D = seqs.shape[0], feats.shape[1]
@@ -119,10 +135,10 @@ class HybridSleepDataset(Dataset):
             seq_list.append(seqs.astype(np.float32))
             lbl_list.append(labels.astype(np.int64))
 
-        self.sequences  = torch.from_numpy(np.concatenate(seq_list, axis=0))
-        self.c22_feats  = torch.from_numpy(np.concatenate(c22_list, axis=0))
-        self.psd_feats  = torch.from_numpy(np.concatenate(psd_list, axis=0))
-        self.seq_labels = torch.from_numpy(np.concatenate(lbl_list, axis=0))
+        self.sequences  = torch.from_numpy(np.concatenate(seq_list,axis=0))
+        self.c22_feats  = torch.from_numpy(np.concatenate(c22_list,axis=0))
+        self.psd_feats  = torch.from_numpy(np.concatenate(psd_list,axis=0))
+        self.seq_labels = torch.from_numpy(np.concatenate(lbl_list,axis=0))
 
     def __len__(self):
         return len(self.sequences)
@@ -135,13 +151,13 @@ class HybridSleepDataset(Dataset):
             self.seq_labels[idx]
         )
 
-# ─── Model Components ──────────────────────────────────────────────────────────
+# ─── Model components ──────────────────────────────────────────────────────────
 class EpochEncoder(nn.Module):
     def __init__(self, emb=128):
         super().__init__()
         self.conv1 = nn.Conv1d(2,32,3,padding=1); self.bn1=nn.BatchNorm1d(32)
         self.conv2 = nn.Conv1d(32,64,3,padding=1); self.bn2=nn.BatchNorm1d(64)
-        self.conv3 = nn.Conv1d(64,128,3,padding=1);self.bn3=nn.BatchNorm1d(128)
+        self.conv3 = nn.Conv1d(64,128,3,padding=1); self.bn3=nn.BatchNorm1d(128)
         self.conv4 = nn.Conv1d(128,128,3,padding=1);self.bn4=nn.BatchNorm1d(128)
         self.pool  = nn.MaxPool1d(2)
         self.attn  = nn.Sequential(
@@ -326,40 +342,20 @@ def train_epoch(model, loader, optimizer, scheduler=None, mixup_alpha=0.2):
             total += labels.numel()
     return running_loss / len(loader.dataset), correct / total if total>0 else 0
 
-def eval_epoch(model, loader, apply_smoothing=False):
-    model.eval()
-    running_loss=0
-    all_preds, all_labels = [], []
-    with torch.no_grad():
-        for raw,c22,psd,labels in loader:
-            raw = raw.to(device); c22 = c22.to(device); psd = psd.to(device)
-            labels = labels.to(device)
-            outputs = model(raw, c22, psd)[0]
-            loss = focal_loss(outputs, labels)
-            running_loss += loss.item() * raw.size(0)
-            preds = outputs.argmax(dim=-1).cpu().numpy().ravel()
-            all_preds.append(preds)
-            all_labels.append(labels.cpu().numpy().ravel())
-    all_preds  = np.concatenate(all_preds)
-    all_labels = np.concatenate(all_labels)
-    raw_acc    = (all_preds == all_labels).mean()
-    return running_loss/len(loader.dataset), raw_acc, all_preds, all_labels
-
 def eval_epoch_probs(model, loader):
     model.eval()
     probs_list, labels_list = [], []
     with torch.no_grad():
         for raw,c22,psd,labels in loader:
             raw = raw.to(device); c22 = c22.to(device); psd = psd.to(device)
-            outputs = model(raw, c22, psd)[0]
-            probs = F.softmax(outputs, dim=-1).cpu().numpy().reshape(-1,5)
+            logits = model(raw, c22, psd)[0]
+            probs = F.softmax(logits, dim=-1).cpu().numpy().reshape(-1,5)
             labs  = labels.cpu().numpy().reshape(-1)
             probs_list.append(probs); labels_list.append(labs)
     return np.concatenate(probs_list, axis=0), np.concatenate(labels_list, axis=0)
 
 # ─── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    # build subject splits
     subj_map = {}
     for f in glob.glob(str(PROCESSED_DATA_DIR/"*_sequences.npz")):
         rid = Path(f).stem.split("_")[0]
@@ -388,16 +384,16 @@ def main():
 
         flat_lbl = train_ds.seq_labels.view(-1).numpy()
         counts   = np.bincount(flat_lbl, minlength=5)
-        weights  = 1.0 / np.sqrt(counts + 1e-6); weights[1] *= 1.5
+        weights  = 1.0/np.sqrt(counts+1e-6); weights[1]*=1.5
         seq_w    = np.array([weights[train_ds.seq_labels[i].numpy()].mean()
                              for i in range(len(train_ds))])
         sampler  = WeightedRandomSampler(seq_w, len(seq_w), replacement=True)
 
         train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
-                                  sampler=sampler, num_workers=16,
+                                  sampler=sampler, num_workers=NUM_WORKERS,
                                   pin_memory=True)
         test_loader  = DataLoader(test_ds, batch_size=BATCH_SIZE,
-                                  shuffle=False, num_workers=16,
+                                  shuffle=False, num_workers=NUM_WORKERS,
                                   pin_memory=True)
 
         c22_dim = train_ds.c22_feats.shape[-1]
@@ -414,13 +410,15 @@ def main():
         train_losses, val_losses = [], []
         for ep in range(NUM_EPOCHS):
             tr_loss, tr_acc = train_epoch(model, train_loader, optimizer, scheduler)
-            vl_loss, vl_acc, _, _ = eval_epoch(model, test_loader)
+            vl_probs, vl_lbls  = eval_epoch_probs(model, test_loader)
+            vl_loss = focal_loss(torch.from_numpy(vl_probs).to(device).view(-1,5),
+                                 torch.from_numpy(vl_lbls).to(device).view(-1))
             train_losses.append(tr_loss)
-            val_losses.append(vl_loss)
+            val_losses.append(vl_loss.item())
             logger.info(f"Fold {k+1} Epoch {ep+1}/{NUM_EPOCHS} "
                         f"train_loss={tr_loss:.4f} val_loss={vl_loss:.4f}")
 
-        # convergence
+        # convergence plot
         plt.plot(train_losses, label="Train Loss")
         plt.plot(val_losses,   label="Val Loss")
         plt.xlabel("Epoch"); plt.ylabel("Loss")
@@ -429,11 +427,11 @@ def main():
         plt.savefig(FIGURES_DIR/f"convergence_fold{k+1}.png")
         plt.clf()
 
-        # final metrics & probs
+        # final eval
         probs, lbls = eval_epoch_probs(model, test_loader)
-        preds = probs.argmax(axis=1)
-        cm    = confusion_matrix(lbls, preds)
-        all_conf += cm
+        preds       = probs.argmax(axis=1)
+        cm          = confusion_matrix(lbls, preds)
+        all_conf   += cm
         all_probs.append(probs)
         all_lbls.append(lbls)
 
@@ -441,7 +439,7 @@ def main():
                                     target_names=["W","N1","N2","N3","REM"])
         logger.info(f"\nFold {k+1} classification report:\n{rep}")
 
-    # confusion matrix plot (all folds)
+    # confusion matrix (all folds)
     plt.matshow(all_conf)
     plt.colorbar()
     plt.xticks(range(5), ["W","N1","N2","N3","REM"])
@@ -455,7 +453,7 @@ def main():
     all_probs_arr = np.concatenate(all_probs, axis=0)
     all_lbls_arr  = np.concatenate(all_lbls,  axis=0)
     bin_lbls      = label_binarize(all_lbls_arr, classes=[0,1,2,3,4])
-    for i, cls in enumerate(["W","N1","N2","N3","REM"]):
+    for i,cls in enumerate(["W","N1","N2","N3","REM"]):
         fpr, tpr, _ = roc_curve(bin_lbls[:,i], all_probs_arr[:,i])
         roc_auc     = auc(fpr, tpr)
         plt.plot(fpr, tpr, label=f"{cls} (AUC={roc_auc:.2f})")
