@@ -463,6 +463,7 @@ PARAM_GRID = {
 
 def run_cv(hp):
     """Run 5-fold CV under one hyperparameter dict hp, return mean raw accuracy."""
+    logger.info(f"Starting 5-fold CV with hyperparameters: {hp}")
     subj_map = group_by_true_subjects(PROCESSED_DATA_DIR)
     subs     = list(subj_map.keys())
     np.random.seed(SEED); np.random.shuffle(subs)
@@ -470,18 +471,22 @@ def run_cv(hp):
 
     accs = []
     for k in range(5):
+        logger.info(f"--- Starting Fold {k+1}/5 ---")
         # split ids
         train_sub = [s for i,f in enumerate(folds) if i!=k for s in f]
         test_sub  = folds[k]
         train_ids = [rid for s in train_sub for rid in subj_map[s]]
         test_ids  = [rid for s in test_sub  for rid in subj_map[s]]
+        logger.info(f"Fold {k+1}: {len(train_ids)} train recordings, {len(test_ids)} test recordings")
 
         # datasets
+        logger.info(f"Fold {k+1}: Loading training dataset...")
         train_ds = HybridSleepDataset(
             PROCESSED_DATA_DIR, CATCH22_DATA_DIR, PSD_DATA_DIR,
             recording_ids=train_ids,
             seq_length=hp["seq_length"], seq_stride=hp["seq_stride"]
         )
+        logger.info(f"Fold {k+1}: Loading testing dataset...")
         test_ds  = HybridSleepDataset(
             PROCESSED_DATA_DIR, CATCH22_DATA_DIR, PSD_DATA_DIR,
             recording_ids=test_ids,
@@ -499,6 +504,7 @@ def run_cv(hp):
         ])
         sampler = WeightedRandomSampler(seq_w, len(seq_w), replacement=True)
 
+        logger.info(f"Fold {k+1}: Creating DataLoaders...")
         tr_loader = DataLoader(
             train_ds,
             batch_size=hp["batch_size"],
@@ -515,6 +521,7 @@ def run_cv(hp):
         )
 
         # model
+        logger.info(f"Fold {k+1}: Initializing model...")
         c22_d = train_ds.c22_feats.shape[-1]
         psd_d = train_ds.psd_feats.shape[-1]
         model = HybridSleepTransformer(
@@ -542,36 +549,56 @@ def run_cv(hp):
         )
 
         # train
+        logger.info(f"Fold {k+1}: Starting training for {args.epochs} epochs...")
         for ep in range(args.epochs):
+            # Maybe add per-epoch logging inside train_epoch if needed
             _ , _ = train_epoch(model, tr_loader, optimizer, scheduler)
+        logger.info(f"Fold {k+1}: Training finished.")
 
         # eval
+        logger.info(f"Fold {k+1}: Evaluating model...")
         _, raw_acc, _, _, _ = eval_epoch(model, te_loader, apply_smoothing=False)
+        logger.info(f"Fold {k+1}: Evaluation finished. Raw Accuracy = {raw_acc:.4f}")
         accs.append(raw_acc)
+        logger.info(f"--- Finished Fold {k+1}/5 ---")
 
-    return float(np.mean(accs))
+    mean_acc = float(np.mean(accs))
+    logger.info(f"Finished 5-fold CV. Mean Raw Accuracy = {mean_acc:.4f}")
+    return mean_acc
 
 def do_grid_search():
+    logger.info("Starting grid search...")
     best_acc = -1
     best_hp  = None
 
-    for combo in itertools.product(*PARAM_GRID.values()):
+    param_combinations = list(itertools.product(*PARAM_GRID.values()))
+    total_combos = len(param_combinations)
+    logger.info(f"Total hyperparameter combinations to test: {total_combos}")
+
+    for i, combo in enumerate(param_combinations):
         hp = dict(zip(PARAM_GRID.keys(), combo))
         # hash key for results dir
         key = hashlib.md5(json.dumps(hp, sort_keys=True).encode()).hexdigest()[:8]
         outdir = RESULTS_DIR/"grid_search"/key
         outdir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Grid hp={hp} → running CV...")
-        acc = run_cv(hp)
-        logger.info(f"→ got mean accuracy={acc:.4f}")
+        logger.info(f"--- Grid Search Iteration {i+1}/{total_combos} ---")
+        logger.info(f"Testing hyperparameters: {hp}")
+        logger.info(f"Results will be saved to: {outdir}")
 
+        acc = run_cv(hp)
+        logger.info(f"Grid Search Iteration {i+1}/{total_combos}: Mean CV Accuracy = {acc:.4f}")
+
+        logger.info(f"Saving results for iteration {i+1} to {outdir/'result.json'}...")
         with open(outdir/"result.json","w") as f:
             json.dump({"hp":hp,"mean_accuracy":acc}, f, indent=2)
+        logger.info(f"Results saved.")
 
         if acc > best_acc:
+            logger.info(f"New best accuracy found! {acc:.4f} (previous best: {best_acc:.4f})")
             best_acc, best_hp = acc, hp
 
+    logger.info("Grid search finished.")
     logger.info(f"*** BEST HP = {best_hp} with mean_acc={best_acc:.4f} ***")
 
 # ─── Main entrypoint ─────────────────────────────────────────────────────────────
