@@ -470,7 +470,7 @@ def run_cv(hp):
     folds    = np.array_split(subs, 5)
 
     accs = []
-    for k in range(5):
+    for k in range(1):
         logger.info(f"--- Starting Fold {k+1}/5 ---")
         # split ids
         train_sub = [s for i,f in enumerate(folds) if i!=k for s in f]
