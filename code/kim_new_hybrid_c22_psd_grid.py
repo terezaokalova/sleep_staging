@@ -831,7 +831,15 @@ def run_cv(hp):
             'val': val_metrics,
             'final_val': val_results
         }
-        with open(fold_dir / "metrics.json", "w") as f:
+
+        fv = metrics['final_val']
+        if fv['preds'] is not None:
+            fv['preds']  = fv['preds'].tolist()
+            fv['labels'] = fv['labels'].tolist()
+            fv['probs']  = fv['probs'].tolist()
+            
+        # now it’s safe to dump
+        with open(fold_dir/"metrics.json", "w") as f:
             json.dump(metrics, f, indent=2)
         
         accs.append(val_results['accuracy'])
