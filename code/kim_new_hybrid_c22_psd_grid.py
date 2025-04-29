@@ -40,7 +40,7 @@ args.results_root = Path("/mnt/sauce/littlab/users/kimliang/sleep/STAT-4830-GOAL
 args.figures_root = Path("/mnt/sauce/littlab/users/kimliang/sleep/STAT-4830-GOALZ-project/figures")
 args.n_jobs       = 16
 args.batch_size   = 32
-args.epochs       = 50
+args.epochs       = 30
 args.lr           = 2e-4
 args.seq_length   = 30
 args.seq_stride   = 5
@@ -347,7 +347,7 @@ def mixup_batch(raw,c22,psd,labels,alpha=0.2):
             labels, labels[idx], lam)
 
 # ─── Enhanced Training and Evaluation Functions ─────────────────────────────────
-def train_epoch(model, loader, optimizer, scheduler=None, mixup_alpha=0.2):
+def train_epoch(model, loader, optimizer, scheduler, mixup_alpha=0.2):
     model.train()
     running_loss, correct, total = 0.0, 0, 0
     all_preds, all_labels = [], []
@@ -817,14 +817,6 @@ def run_cv(hp):
                                        class_names, fold_dir)
             plot_calibration_curve(val_results['labels'], val_results['probs'], 
                                   class_names, fold_dir)
-            
-            # Generate SHAP plots (can be slow, so we'll just do it for the first fold)
-            if k == 0:
-                try:
-                    generate_shap_plots(model, te_loader, class_names, fold_dir)
-                except Exception as e:
-                    logger.warning(f"Failed to generate SHAP plots: {e}")
-        
         # Save detailed classification report
         report = classification_report(
             val_results['labels'], val_results['preds'], 
