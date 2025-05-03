@@ -12,7 +12,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     print("Warning: pyedflib not installed. Cannot perform advanced EDF checks.", file=sys.stderr)
 #     pyedflib = None
 
-# --- Configuration ---
 BASE_DATA_DIR = "/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0"
 CASSETTE_DIR_NAME = "sleep-cassette"
 TELEMETRY_DIR_NAME = "sleep-telemetry"
@@ -20,11 +19,9 @@ LOG_FILENAME = "preprocessing_full.log"
 # Use fewer workers initially to avoid overwhelming system/logs if needed
 MAX_WORKERS = os.cpu_count() // 2 if os.cpu_count() > 1 else 1
 
-# --- Logging Setup ---
 log_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(processName)s: %(message)s',
                                   datefmt='%Y-%m-%d %H:%M:%S')
 logger = logging.getLogger()
-# Clear existing handlers to avoid duplicate logs if script is run multiple times in same session
 if logger.hasHandlers():
     logger.handlers.clear()
 
@@ -36,11 +33,10 @@ file_handler.setFormatter(log_formatter)
 logger.addHandler(file_handler)
 
 # Console Handler
-console_handler = logging.StreamHandler(sys.stdout) # Use stdout for console
+console_handler = logging.StreamHandler(sys.stdout) 
 console_handler.setFormatter(log_formatter)
 logger.addHandler(console_handler)
 
-# --- Helper Functions ---
 
 def find_hypnogram(psg_filepath):
     """
@@ -55,18 +51,15 @@ def find_hypnogram(psg_filepath):
     psg_filename = os.path.basename(psg_filepath)
     dir_path = os.path.dirname(psg_filepath)
 
-    # Extract the core identifier (e.g., "SC4022" or "ST7011")
+    # identifier (e.g., "SC4022" or "ST7011")
     match = re.match(r"(SC|ST)(\d{4})", psg_filename)
     if not match:
-        # Logged at the worker level if this happens
         return None, f"Could not extract core ID from PSG filename: {psg_filename}"
     core_id = match.group(0) # e.g., "SC4022"
 
-    # Construct the corrected glob pattern (e.g., SC4022*-Hypnogram.edf)
     hypnogram_pattern = f"{core_id}*-Hypnogram.edf"
     search_pattern = os.path.join(dir_path, hypnogram_pattern)
 
-    # Use glob to find matching files
     try:
         found_hypno_files = glob.glob(search_pattern)
     except Exception as e:
@@ -80,14 +73,10 @@ def find_hypnogram(psg_filepath):
         return None, f"Multiple hypnograms found matching {search_pattern}: [{file_list}]. Skipping."
     else:
         # Unique match found
-        return found_hypno_files[0], None # Return path and no error message
+        return found_hypno_files[0], None 
 
 def process_file_pair(psg_filepath, hypno_filepath):
     """
-    Minimal processing step: Logs the files being processed.
-    <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    <<< YOU MUST REPLACE THIS SECTION WITH YOUR ACTUAL ANALYSIS CODE >>>
-    <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     Args:
         psg_filepath (str): Path to the PSG file.
@@ -100,37 +89,12 @@ def process_file_pair(psg_filepath, hypno_filepath):
     hypno_filename = os.path.basename(hypno_filepath)
     try:
         # Minimal action: Log successful pairing.
-        # In a real scenario, you would load data here.
         logging.debug(f"Processing pair: PSG='{psg_filename}', Hypnogram='{hypno_filename}'")
 
-        # --- START: REPLACEABLE SECTION ---
-        # Example of what might go here:
-        # ----------------------------------
-        # Check if files exist (though they should, as they were found by glob)
         if not os.path.exists(psg_filepath):
              return False, f"PSG file disappeared: {psg_filename}"
         if not os.path.exists(hypno_filepath):
              return False, f"Hypno file disappeared: {hypno_filename}"
-
-        # Optional: Basic check using pyedflib if installed
-        # if pyedflib:
-        #     try:
-        #         f_psg = pyedflib.EdfReader(psg_filepath)
-        #         f_psg.close()
-        #         del f_psg
-        #         f_hyp = pyedflib.EdfReader(hypno_filepath)
-        #         f_hyp.close()
-        #         del f_hyp
-        #     except Exception as edf_err:
-        #          logging.error(f"pyedflib error opening {psg_filename} or {hypno_filename}: {edf_err}")
-        #          return False, f"EDF_READ_ERROR: {edf_err}"
-
-        # --- Actual analysis would go here ---
-        # e.g., data = load_and_preprocess(psg_filepath, hypno_filepath)
-        # e.g., features = extract_features(data)
-        # e.g., save_results(features, psg_filename)
-        # ----------------------------------
-        # --- END: REPLACEABLE SECTION ---
 
         # Simulate success as pairing and basic checks passed
         time.sleep(0.01) # Tiny sleep to simulate work
@@ -161,9 +125,8 @@ def worker_task(psg_filepath):
     hypno_filepath, find_error_msg = find_hypnogram(psg_filepath)
 
     if hypno_filepath is None:
-        # find_hypnogram failed, log the specific reason it returned
         logging.warning(f"{find_error_msg} for {psg_filename}")
-        return (psg_filename, "FAILED_HYPNO", find_error_msg) # Pass error message back
+        return (psg_filename, "FAILED_HYPNO", find_error_msg) 
 
     # If hypnogram found, proceed to processing
     success, message_code = process_file_pair(psg_filepath, hypno_filepath)
@@ -177,16 +140,10 @@ def worker_task(psg_filepath):
         logging.warning(f"Processing step failed for {psg_filename} with code {message_code}")
         return (psg_filename, message_code, f"Failed during processing step for {psg_filename}")
 
-# --- Main Execution ---
-
 def main():
     start_time = time.time()
-    logging.info("============================================================")
-    logging.info("            Preprocessing Script Started (Revised)")
-    logging.info("============================================================")
     logging.info(f"Base Data Directory: {BASE_DATA_DIR}")
     logging.info(f"Using up to {MAX_WORKERS} workers.")
-    logging.info("------------------------------------------------------------")
 
     cassette_path = os.path.join(BASE_DATA_DIR, CASSETTE_DIR_NAME)
     telemetry_path = os.path.join(BASE_DATA_DIR, TELEMETRY_DIR_NAME)
@@ -259,8 +216,6 @@ def main():
     end_time = time.time()
     total_time = end_time - start_time
 
-    # --- Final Summary Logging ---
-    logging.info("------------------------------------------------------------")
     logging.info("Preprocessing Script Finished")
     logging.info(f"Total files attempted: {total_files}")
     logging.info(f"   Successfully processed (basic checks OK): {success_count}")
@@ -287,18 +242,8 @@ def main():
                      logging.warning(f"     - ... (further details for {status} logged in file)")
                      break # Stop printing details for this status
 
-    logging.info("============================================================")
     logging.info("                  End of Preprocessing Run")
-    logging.info("============================================================")
 
 
 if __name__ == "__main__":
-    # Set start method for multiprocessing if needed (e.g., 'fork', 'spawn')
-    # import multiprocessing
-    # if sys.platform.startswith('win'):
-    #      multiprocessing.set_start_method('spawn', force=True)
-    # elif sys.platform.startswith('darwin'): # macOS might benefit from 'spawn' sometimes
-    #      pass # Use default 'fork' unless issues arise
-    # else: # Linux typically uses 'fork' by default
-    #      pass
     main()
