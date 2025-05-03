@@ -4,23 +4,26 @@ import glob
 import logging
 import time
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import datetime
+
 try:
     import pyedflib
+    print(f"pyedflib is installed (version: {pyedflib.__version__})")
 except ImportError:
-    print("Warning: pyedflib not installed. Cannot perform EDF processing.", file=sys.stderr)
-    pyedflib = None
+    print("ERROR: pyedflib is NOT installed. Run 'pip install pyedflib'")
+    sys.exit(1)
 
 BASE_DATA_DIR = "/users/okalova/sleep/STAT-4830-GOALZ-project/data/sleep-edf-database-expanded-1.0.0"
 CASSETTE_DIR_NAME = "sleep-cassette"
 TELEMETRY_DIR_NAME = "sleep-telemetry"
-LOG_FILENAME = "preprocessing_full.log"
 OUTPUT_DIR_NAME = "processed_output"
-MAX_WORKERS = os.cpu_count() // 2 if os.cpu_count() > 1 else 1
+LOG_FILENAME = f"preprocessing_full_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+MAX_WORKERS = 16
 
 log_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(processName)s: %(message)s',
-                                  datefmt='%Y-%m-%d %H:%M:%S')
+                                 datefmt='%Y-%m-%d %H:%M:%S')
 logger = logging.getLogger()
 if logger.hasHandlers():
     logger.handlers.clear()
@@ -35,6 +38,8 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(log_formatter)
 logger.addHandler(console_handler)
 
+for handler in logger.handlers:
+    handler.flush()
 
 def find_hypnogram(psg_filepath):
     psg_filename = os.path.basename(psg_filepath)
@@ -61,7 +66,6 @@ def find_hypnogram(psg_filepath):
     else:
         return found_hypno_files[0], None 
 
-
 def process_file_pair(psg_filepath, hypno_filepath):
     psg_filename = os.path.basename(psg_filepath)
     hypno_filename = os.path.basename(hypno_filepath)
@@ -74,43 +78,63 @@ def process_file_pair(psg_filepath, hypno_filepath):
         if not os.path.exists(hypno_filepath):
             return False, f"Hypno file disappeared: {hypno_filename}"
         
-        if pyedflib is None:
-            return False, "PYEDFLIB_NOT_INSTALLED"
-        
-        # Create output directory
         base_dir = os.path.dirname(os.path.dirname(psg_filepath))
         output_dir = os.path.join(base_dir, OUTPUT_DIR_NAME)
         os.makedirs(output_dir, exist_ok=True)
         
-        # Output filename - preserve the original ID
         match = re.match(r"(SC|ST)(\d{4})", psg_filename)
         if not match:
             return False, f"Regex extraction failed for output name: {psg_filename}"
         record_id = match.group(0)
         output_path = os.path.join(output_dir, f"{record_id}_processed.npz")
         
-        # Read PSG file
+        file_size_mb = os.path.getsize(psg_filepath) / (1024 * 1024)
+        logging.info(f"Reading PSG file: {psg_filename} ({file_size_mb:.2f} MB)")
+        
         with pyedflib.EdfReader(psg_filepath) as psg_file:
             n_signals = psg_file.signals_in_file
             signal_labels = psg_file.getSignalLabels()
+            logging.info(f"Found {n_signals} signals: {', '.join(signal_labels)}")
             
-            # Read all signals (include all electrodes)
             signals = []
             signal_headers = []
             for i in range(n_signals):
                 signals.append(psg_file.readSignal(i))
                 signal_headers.append(psg_file.getSignalHeader(i))
             
-            # Get sampling frequencies
-            sampling_freqs = [header['sample_rate'] for header in signal_headers]
+            if signal_headers and len(signal_headers) > 0:
+                logging.info(f"Header keys: {list(signal_headers[0].keys())}")
+            
+            # Try different possible keys for sampling frequency
+            try:
+                sampling_freqs = [header['sample_frequency'] for header in signal_headers]
+            except KeyError:
+                try:
+                    sampling_freqs = [header['fs'] for header in signal_headers]
+                except KeyError:
+                    try:
+                        sampling_freqs = [header['samplefrequency'] for header in signal_headers]
+                    except KeyError:
+                        try:
+                            sampling_freqs = [header['sample_rate'] for header in signal_headers]
+                        except KeyError:
+                            logging.warning(f"Could not find sampling frequency in headers for {psg_filename}")
+                            sampling_freqs = [100.0] * len(signal_headers)
+            
+            logging.info(f"Sampling frequencies: {sampling_freqs}")
         
-        # Read hypnogram file
         with pyedflib.EdfReader(hypno_filepath) as hypno_file:
             hypnogram = hypno_file.readSignal(0)
             hypno_header = hypno_file.getSignalHeader(0)
-            hypno_annotations = hypno_file.readAnnotations()
+            
+            try:
+                hypno_annotations = hypno_file.readAnnotations()
+                logging.info(f"Found {len(hypno_annotations[0])} annotations in hypnogram")
+            except Exception as e:
+                logging.warning(f"Could not read annotations: {e}")
+                hypno_annotations = None
         
-        # Save all data
+        logging.info(f"Saving processed data to: {output_path}")
         np.savez(output_path,
                  signals=signals,
                  signal_labels=signal_labels,
@@ -118,13 +142,26 @@ def process_file_pair(psg_filepath, hypno_filepath):
                  hypnogram=hypnogram,
                  hypno_annotations=hypno_annotations)
         
-        logging.info(f"Successfully saved processed data to: {output_path}")
+        output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        logging.info(f"Successfully saved: {output_path} ({output_size_mb:.2f} MB)")
         return True, "PROCESSED_OK"
         
     except Exception as e:
         logging.error(f"Error processing {psg_filename}: {e}", exc_info=True)
         return False, f"PROCESSING_ERROR: {e}"
 
+def verify_output_file(output_path):
+    try:
+        data = np.load(output_path)
+        info_str = f"Verification of {os.path.basename(output_path)}:\n"
+        info_str += f"  - Found {len(data.files)} arrays: {', '.join(data.files)}\n"
+        info_str += f"  - Signals shape: {data['signals'].shape}\n"
+        info_str += f"  - Hypnogram length: {len(data['hypnogram'])}"
+        logging.info(info_str)
+        return True
+    except Exception as e:
+        logging.error(f"Verification failed for {output_path}: {e}")
+        return False
 
 def worker_task(psg_filepath):
     psg_filename = os.path.basename(psg_filepath)
@@ -139,17 +176,20 @@ def worker_task(psg_filepath):
     success, message_code = process_file_pair(psg_filepath, hypno_filepath)
 
     if success:
-        logging.debug(f"Processing successful for {psg_filename} with code {message_code}")
+        logging.info(f"Processing successful for {psg_filename}")
         return (psg_filename, message_code, f"Successfully processed {psg_filename}")
     else:
         logging.warning(f"Processing failed for {psg_filename} with code {message_code}")
         return (psg_filename, message_code, f"Failed during processing step for {psg_filename}")
 
-
 def main():
     start_time = time.time()
     logging.info(f"Base Data Directory: {BASE_DATA_DIR}")
     logging.info(f"Using up to {MAX_WORKERS} workers.")
+
+    output_dir = os.path.join(BASE_DATA_DIR, OUTPUT_DIR_NAME)
+    os.makedirs(output_dir, exist_ok=True)
+    logging.info(f"Output directory: {output_dir}")
 
     cassette_path = os.path.join(BASE_DATA_DIR, CASSETTE_DIR_NAME)
     telemetry_path = os.path.join(BASE_DATA_DIR, TELEMETRY_DIR_NAME)
@@ -185,6 +225,17 @@ def main():
         for future in as_completed(futures):
             psg_filepath_orig = futures[future]
             processed_count += 1
+            
+            if processed_count % 10 == 0:
+                elapsed = time.time() - start_time
+                rate = processed_count / elapsed if elapsed > 0 else 0
+                est_remaining = (total_files - processed_count) / rate if rate > 0 else "unknown"
+                logging.info(f"Progress: {processed_count}/{total_files} files ({processed_count/total_files*100:.1f}%). " +
+                           f"Rate: {rate:.2f} files/sec. Est. remaining: {est_remaining if isinstance(est_remaining, str) else f'{est_remaining:.1f} sec'}")
+                
+                for handler in logger.handlers:
+                    handler.flush()
+            
             try:
                 result = future.result()
                 results.append(result)
@@ -235,6 +286,13 @@ def main():
                      logging.warning(f"     - ... (further details for {status} logged in file)")
                      break
 
+    if success_count > 0:
+        output_files = glob.glob(os.path.join(output_dir, "*_processed.npz"))
+        sample_count = min(2, len(output_files))
+        if sample_count > 0:
+            logging.info(f"Verifying {sample_count} output files for data integrity:")
+            for i in range(sample_count):
+                verify_output_file(output_files[i])
 
 if __name__ == "__main__":
     main()
